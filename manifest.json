@@ -1,0 +1,36 @@
+{
+    "display_information": {
+        "name": "Slack Copilot",
+        "description": "Personal copilot feed for my DMs and mentions, analyzed by Claude locally"
+    },
+    "oauth_config": {
+        "scopes": {
+            "user": [
+                "channels:history",
+                "channels:read",
+                "groups:history",
+                "groups:read",
+                "im:history",
+                "im:read",
+                "mpim:history",
+                "mpim:read",
+                "users:read",
+                "chat:write"
+            ]
+        }
+    },
+    "settings": {
+        "event_subscriptions": {
+            "user_events": [
+                "message.channels",
+                "message.groups",
+                "message.im",
+                "message.mpim"
+            ]
+        },
+        "org_deploy_enabled": false,
+        "socket_mode_enabled": true,
+        "is_hosted": false,
+        "token_rotation_enabled": false
+    }
+}

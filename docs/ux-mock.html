@@ -1,0 +1,577 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>(1!) Slack Copilot — UX mock</title>
+<link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="%23151b23"/><path d="M8 21c4 3 12 3 16 0" stroke="%234c8dff" stroke-width="3" fill="none" stroke-linecap="round"/><circle cx="24" cy="9" r="6" fill="%23f85149"/></svg>'>
+<style>
+  /* ============ tokens ============ */
+  :root{
+    --bg:#0d1117; --surface:#151b23; --surface-2:#1d2530; --border:#2a313c;
+    --text:#e6edf3; --text-2:#9aa4b2; --text-3:#646d79;
+    --accent:#4c8dff; --ok:#3fb950; --warn:#e3b341;
+    --p0:#f85149; --p1:#f0883e; --p2:#d29922; --p3:#8b949e;
+    --ws-a:#39c5cf; --ws-n:#bc8cff;
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--bg); color:var(--text);
+    font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    min-width:1200px; overflow-x:auto;
+  }
+  a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+  .mono{font-family:var(--mono)}
+  .app{display:flex;flex-direction:column;height:100vh}
+
+  /* ============ top bar ============ */
+  .topbar{
+    display:flex;align-items:center;gap:16px;padding:8px 14px;
+    border-bottom:1px solid var(--border);background:var(--surface);flex:none;
+  }
+  .brand{font-weight:700;font-size:13px}
+  .brand .dot{color:var(--accent)}
+  .tabs{display:flex;gap:2px}
+  .tab{padding:4px 10px;border-radius:6px;color:var(--text-2);cursor:pointer;font-size:12.5px}
+  .tab.active{background:var(--surface-2);color:var(--text);font-weight:600}
+  .tab .count{color:var(--accent);font-family:var(--mono);font-size:11px;margin-left:4px}
+  .statuses{margin-left:auto;display:flex;align-items:center;gap:14px;font-size:11.5px;color:var(--text-2)}
+  .st{display:flex;align-items:center;gap:5px}
+  .st i{width:7px;height:7px;border-radius:50%;display:inline-block}
+  .st i.ok{background:var(--ok)} .st i.warn{background:var(--warn)} .st i.err{background:var(--p0)}
+  .queue{font-family:var(--mono);font-size:11px;color:var(--text-3);
+    border:1px solid var(--border);border-radius:10px;padding:1px 8px}
+
+  /* connection strip (error-state demo) */
+  .strip{
+    flex:none;background:rgba(227,179,65,.10);border-bottom:1px solid rgba(227,179,65,.35);
+    color:var(--warn);font-size:12px;padding:4px 14px;
+  }
+
+  /* ============ main 3-pane ============ */
+  .main{flex:1;display:grid;grid-template-columns:380px 1fr 400px;min-height:0}
+  body.chat-closed .main{grid-template-columns:380px 1fr 0}
+  body.chat-closed .chat{display:none}
+  .pane{min-height:0;display:flex;flex-direction:column}
+  .feed{border-right:1px solid var(--border)}
+  .chat{border-left:1px solid var(--border);background:var(--surface)}
+
+  /* ============ feed ============ */
+  .feedlist{flex:1;overflow-y:auto;padding:6px}
+  .group-label{
+    font-size:10px;font-weight:700;letter-spacing:.08em;color:var(--text-3);
+    text-transform:uppercase;padding:6px 8px 2px;display:flex;align-items:center;gap:6px;
+  }
+  .group-label .spin{color:var(--warn)}
+  .card{
+    position:relative;background:var(--surface);border:1px solid var(--border);
+    border-radius:6px;padding:8px 10px 8px 14px;margin:4px 0;cursor:pointer;
+  }
+  .card::before{ /* urgency edge */
+    content:"";position:absolute;left:0;top:0;bottom:0;width:3px;
+    border-radius:6px 0 0 6px;background:var(--edge,transparent);
+  }
+  .card:hover{background:var(--surface-2)}
+  .card.sel{background:var(--surface-2);outline:1px solid var(--accent);outline-offset:-1px}
+  .card.p0{--edge:var(--p0);background:linear-gradient(rgba(248,81,73,.06),rgba(248,81,73,.06)),var(--surface)}
+  .card.p0:hover,.card.p0.sel{background:linear-gradient(rgba(248,81,73,.06),rgba(248,81,73,.06)),var(--surface-2)}
+  .card.p1{--edge:var(--p1)} .card.p2{--edge:var(--p2)} .card.p3{--edge:var(--p3)}
+  .card.done{opacity:.45}
+
+  .crow1{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-3);margin-bottom:3px}
+  .chip{
+    font-family:var(--mono);font-size:10px;font-weight:700;border-radius:4px;
+    padding:0 5px;line-height:16px;flex:none;border:1px solid transparent;
+  }
+  .chip.c0{background:var(--p0);color:#0d1117}
+  .chip.c1{border-color:var(--p1);color:var(--p1)}
+  .chip.c2{border-color:var(--p2);color:var(--p2)}
+  .chip.c3{border-color:var(--p3);color:var(--p3)}
+  .chip.pending{border:1px dashed var(--text-3);color:var(--text-3)}
+  .stale-mark{color:var(--warn);font-size:12px;flex:none;cursor:help}
+  .ws{
+    font-family:var(--mono);font-size:9px;font-weight:700;color:#0d1117;border-radius:3px;
+    width:14px;height:14px;display:inline-flex;align-items:center;justify-content:center;flex:none;
+  }
+  .ws.a{background:var(--ws-a)} .ws.n{background:var(--ws-n)}
+  .chan{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-2)}
+  .kind{color:var(--text-3)}
+  .ctime{margin-left:auto;font-family:var(--mono);font-size:10.5px;flex:none}
+  .hoverbtns{display:none;gap:2px;margin-left:6px}
+  .card:hover .hoverbtns{display:inline-flex}
+  .hbtn{border:1px solid var(--border);background:var(--surface);color:var(--text-2);
+    border-radius:4px;font-size:10px;line-height:15px;padding:0 5px;cursor:pointer}
+  .hbtn:hover{color:var(--text)}
+
+  .crow2{display:flex;align-items:center;gap:6px;white-space:nowrap;overflow:hidden}
+  .udot{width:6px;height:6px;border-radius:50%;background:var(--accent);flex:none}
+  .card.seen .udot{display:none}
+  .card.done .udot{display:none}
+  .ddone{display:none;color:var(--ok);font-size:11px;flex:none}
+  .card.done .ddone{display:inline}
+  .sender{font-weight:600;flex:none}
+  .snippet{color:var(--text);overflow:hidden;text-overflow:ellipsis}
+  .card.seen .sender,.card.seen .snippet{color:var(--text-2);font-weight:400}
+  .card.seen .sender{font-weight:500}
+
+  .crow3{display:flex;gap:6px;align-items:center;white-space:nowrap;overflow:hidden;margin-top:2px}
+  .spark{color:var(--accent);font-size:10px;flex:none}
+  .why{color:var(--text-2);overflow:hidden;text-overflow:ellipsis;font-size:12px}
+  .card.stale .why{opacity:.6}
+  .why.shimmer{color:var(--text-3);font-style:italic;
+    background:linear-gradient(90deg,var(--text-3) 40%,var(--text-2) 50%,var(--text-3) 60%);
+    background-size:200% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;
+    animation:sh 1.6s linear infinite}
+  @keyframes sh{to{background-position:-200% 0}}
+
+  .feedfoot{
+    flex:none;border-top:1px solid var(--border);padding:5px 12px;
+    font-family:var(--mono);font-size:10px;color:var(--text-3);
+  }
+  .feedfoot b{color:var(--text-2);font-weight:600}
+
+  /* ============ thread ============ */
+  .thread{overflow-y:auto}
+  .thead{
+    position:sticky;top:0;background:var(--bg);z-index:2;
+    display:flex;align-items:center;gap:8px;padding:10px 16px;border-bottom:1px solid var(--border);
+  }
+  .thead .title{font-weight:700;font-size:14px;white-space:nowrap}
+  .thead .sub{color:var(--text-3);font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
+  .tactions{margin-left:auto;display:flex;gap:6px;flex:none}
+  .btn{
+    border:1px solid var(--border);background:var(--surface);color:var(--text);
+    border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer;
+  }
+  .btn:hover{background:var(--surface-2)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#0d1117;font-weight:600}
+  .btn.primary:hover{filter:brightness(1.1)}
+  .key{font-family:var(--mono);font-size:9.5px;border:1px solid var(--border);
+    border-bottom-width:2px;border-radius:3px;padding:0 4px;color:var(--text-3);margin-left:5px}
+
+  .tbody{padding:14px 16px 24px;max-width:860px}
+
+  /* analysis card */
+  .analysis{border:1px solid var(--border);border-radius:8px;background:var(--surface);margin-bottom:16px}
+  .stalebanner{
+    display:flex;align-items:center;gap:8px;padding:6px 12px;font-size:12px;color:var(--warn);
+    background:rgba(227,179,65,.08);border-bottom:1px solid rgba(227,179,65,.3);border-radius:8px 8px 0 0;
+  }
+  .abody{padding:12px 14px}
+  .awhy{display:flex;align-items:center;gap:8px;font-size:13.5px;font-weight:600;margin-bottom:8px}
+  .asec{margin:8px 0;font-size:12.5px;color:var(--text-2)}
+  .asec b{color:var(--text);font-weight:600}
+  .action-row{display:flex;align-items:flex-start;gap:10px}
+  .action-row .draftbtn{
+    flex:none;border:1px solid var(--accent);color:var(--accent);background:none;
+    border-radius:6px;padding:2px 8px;font-size:11.5px;cursor:pointer;
+  }
+  .action-row .draftbtn:hover{background:rgba(76,141,255,.1)}
+  .ctx{list-style:none;margin-top:4px}
+  .ctx li{padding:2px 0;color:var(--text-2);font-size:12.5px}
+  .src{
+    font-family:var(--mono);font-size:10px;color:var(--text-3);
+    border:1px solid var(--border);border-radius:4px;padding:0 4px;margin-right:6px;
+  }
+  .ameta{
+    display:flex;gap:6px;align-items:center;border-top:1px solid var(--border);
+    padding:6px 14px;font-family:var(--mono);font-size:10.5px;color:var(--text-3);
+  }
+  .ameta a{color:var(--text-3);text-decoration:underline}
+
+  /* transcript */
+  .divider{display:flex;align-items:center;gap:10px;color:var(--text-3);font-size:10.5px;
+    font-family:var(--mono);margin:14px 0 8px}
+  .divider::before,.divider::after{content:"";flex:1;border-top:1px solid var(--border)}
+  .divider.stale-div{color:var(--warn)}
+  .divider.stale-div::before,.divider.stale-div::after{border-color:rgba(227,179,65,.4)}
+  .msg{display:flex;gap:10px;padding:3px 0}
+  .msg.first{margin-top:10px}
+  .avatar{
+    width:26px;height:26px;border-radius:5px;background:var(--surface-2);flex:none;
+    display:flex;align-items:center;justify-content:center;
+    font-size:10px;font-weight:700;color:var(--text-2);
+  }
+  .avatar.ghost{background:none}
+  .mhead{display:flex;align-items:baseline;gap:8px}
+  .mauthor{font-weight:700;font-size:12.5px}
+  .mauthor.me{color:var(--accent)}
+  .mauthor .you{font-weight:400;color:var(--text-3);font-size:11px}
+  .mtime{font-family:var(--mono);font-size:10px;color:var(--text-3)}
+  .mtext{color:var(--text);font-size:13px}
+  .mention{color:var(--accent);background:rgba(76,141,255,.12);border-radius:3px;padding:0 3px}
+  .code{font-family:var(--mono);font-size:11.5px;background:var(--surface-2);
+    border:1px solid var(--border);border-radius:4px;padding:0 4px}
+  .emoji-miss{color:var(--text-3);font-family:var(--mono);font-size:11.5px}
+  .endcta{margin-top:18px;color:var(--text-3);font-size:12px}
+  .endcta a{color:var(--accent)}
+
+  /* ============ chat ============ */
+  .chead{
+    flex:none;display:flex;align-items:center;gap:8px;padding:9px 12px;
+    border-bottom:1px solid var(--border);
+  }
+  .chead .who{font-weight:700;font-size:12.5px}
+  .sess{
+    display:flex;align-items:center;gap:5px;font-family:var(--mono);font-size:10px;
+    color:var(--text-3);border:1px solid var(--border);border-radius:10px;padding:1px 8px;
+  }
+  .sess i{width:6px;height:6px;border-radius:50%;background:var(--ok);display:inline-block}
+  .cclose{margin-left:auto;color:var(--text-3);cursor:pointer;font-size:14px}
+  .cclose:hover{color:var(--text)}
+  .cbody{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:10px}
+  .sysnote{align-self:center;font-family:var(--mono);font-size:10px;color:var(--text-3)}
+  .cmsg .clabel{font-size:10px;font-weight:700;color:var(--text-3);
+    text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px}
+  .cmsg.user .bubble{background:var(--surface-2);border-radius:8px;padding:7px 10px;font-size:12.5px}
+  .cmsg.claude .bubble{font-size:12.5px;color:var(--text)}
+  .cursor{display:inline-block;width:7px;background:var(--accent);color:transparent;
+    animation:blink 1s steps(1) infinite;border-radius:1px}
+  @keyframes blink{50%{opacity:0}}
+  .toolrow{
+    display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10.5px;
+    color:var(--text-3);border:1px solid var(--border);border-radius:6px;
+    padding:3px 8px;cursor:pointer;align-self:flex-start;
+  }
+  .toolrow .ok{color:var(--ok)}
+  .toolrow:hover{color:var(--text-2)}
+
+  /* draft reply card */
+  .draft{border:1px solid var(--border);border-radius:8px;background:var(--bg)}
+  .draft .dhead{
+    font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:.05em;
+    color:var(--text-2);padding:6px 10px;border-bottom:1px solid var(--border);
+  }
+  .draft textarea{
+    width:100%;border:none;background:none;resize:vertical;padding:8px 10px;min-height:74px;
+    color:var(--text);font:12.5px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;outline:none;
+  }
+  .dactions{display:flex;align-items:center;gap:6px;padding:8px 10px;border-top:1px solid var(--border)}
+  .send{
+    background:var(--ok);border:none;color:#0d1117;font-weight:700;font-size:12px;
+    border-radius:6px;padding:5px 12px;cursor:pointer;
+  }
+  .send:hover{filter:brightness(1.1)}
+  .ghostbtn{background:none;border:1px solid var(--border);color:var(--text-2);
+    border-radius:6px;padding:4px 10px;font-size:11.5px;cursor:pointer}
+  .ghostbtn:hover{color:var(--text)}
+  .dnote{padding:0 10px 8px;font-size:10.5px;color:var(--text-3)}
+
+  .composer{flex:none;border-top:1px solid var(--border);padding:10px 12px}
+  .composer textarea{
+    width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;
+    padding:8px 10px;color:var(--text);resize:none;height:60px;outline:none;
+    font:12.5px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  }
+  .composer textarea:focus{border-color:var(--accent)}
+  .chint{font-family:var(--mono);font-size:9.5px;color:var(--text-3);margin-top:4px}
+
+  /* ============ legend footer ============ */
+  .legend{
+    flex:none;display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+    border-top:1px solid var(--border);background:var(--surface);
+    padding:6px 14px;font-size:10.5px;color:var(--text-3);
+  }
+  .lg{display:flex;align-items:center;gap:5px}
+  .sw{width:10px;height:10px;border-radius:3px;display:inline-block}
+  .legend .note{margin-left:auto;font-family:var(--mono)}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ================= top bar ================= -->
+  <div class="topbar">
+    <div class="brand">Slack<span class="dot">·</span>Copilot</div>
+    <div class="tabs">
+      <div class="tab active">Inbox <span class="count">4</span></div>
+      <div class="tab">Done</div>
+      <div class="tab">All</div>
+    </div>
+    <div class="statuses">
+      <span class="queue">analyzing 1</span>
+      <span class="st" title="workspace acme — connected"><i class="ok"></i>acme</span>
+      <span class="st" title="workspace nimbus — reconnecting (retry 2)"><i class="warn"></i>nimbus</span>
+      <span class="st" title="analyzer — healthy"><i class="ok"></i>analyzer</span>
+    </div>
+  </div>
+
+  <!-- error-state demo: workspace socket dropped -->
+  <div class="strip">⚠ nimbus disconnected — reconnecting (retry 2)… feed shows cached data</div>
+
+  <div class="main">
+
+    <!-- ================= FEED ================= -->
+    <div class="pane feed">
+      <div class="feedlist">
+
+        <div class="group-label"><span class="spin">…</span> Analyzing · 1</div>
+
+        <!-- pending analysis -->
+        <div class="card pending" data-nav>
+          <div class="crow1">
+            <span class="chip pending">…</span>
+            <span class="ws n">N</span><span class="chan">DM</span>
+            <span class="ctime">now</span>
+            <span class="hoverbtns"><button class="hbtn" title="mark done (e)">✓</button><button class="hbtn" title="open in Slack (s)">↗</button></span>
+          </div>
+          <div class="crow2"><span class="udot"></span><span class="ddone">✓</span><span class="sender">Sofia Reyes</span><span class="snippet">quick question about the offsite agenda before I send it out</span></div>
+          <div class="crow3"><span class="spark">✦</span><span class="why shimmer">Analyzing…</span></div>
+        </div>
+
+        <div class="group-label">Inbox</div>
+
+        <!-- P0 · new -->
+        <div class="card p0" data-nav>
+          <div class="crow1">
+            <span class="chip c0">P0</span>
+            <span class="ws a">A</span><span class="chan">DM</span>
+            <span class="ctime">6m</span>
+            <span class="hoverbtns"><button class="hbtn">✓</button><button class="hbtn">↗</button></span>
+          </div>
+          <div class="crow2"><span class="udot"></span><span class="ddone">✓</span><span class="sender">Dev Patel</span><span class="snippet">prod ingest is throwing 500s since 14:02 — can you take a look?</span></div>
+          <div class="crow3"><span class="spark">✦</span><span class="why">Prod outage reported directly to you — no one else has been pinged.</span></div>
+        </div>
+
+        <!-- P1 · new · STALE · selected -->
+        <div class="card p1 stale sel" data-nav>
+          <div class="crow1">
+            <span class="chip c1">P1</span>
+            <span class="stale-mark" title="2 new replies since analysis">↻</span>
+            <span class="ws n">N</span><span class="chan">#proj-atlas</span><span class="kind">@</span>
+            <span class="ctime">12m</span>
+            <span class="hoverbtns"><button class="hbtn">✓</button><button class="hbtn">↗</button></span>
+          </div>
+          <div class="crow2"><span class="udot"></span><span class="ddone">✓</span><span class="sender">Maya Chen</span><span class="snippet">can you rotate the staging API keys today? deploy is blocked</span></div>
+          <div class="crow3"><span class="spark">✦</span><span class="why">Blocked on you: key rotation before the 3pm infra sync.</span></div>
+        </div>
+
+        <!-- P1 · seen -->
+        <div class="card p1 seen" data-nav>
+          <div class="crow1">
+            <span class="chip c1">P1</span>
+            <span class="ws a">A</span><span class="chan">#hiring</span><span class="kind">@</span>
+            <span class="ctime">1h</span>
+            <span class="hoverbtns"><button class="hbtn">✓</button><button class="hbtn">↗</button></span>
+          </div>
+          <div class="crow2"><span class="udot"></span><span class="ddone">✓</span><span class="sender">James Wu</span><span class="snippet">looping you in for tomorrow's final-round debrief</span></div>
+          <div class="crow3"><span class="spark">✦</span><span class="why">You're expected at tomorrow's debrief — confirm attendance.</span></div>
+        </div>
+
+        <!-- P2 · new · group DM -->
+        <div class="card p2" data-nav>
+          <div class="crow1">
+            <span class="chip c2">P2</span>
+            <span class="ws n">N</span><span class="chan">DM+ Lena, Tomás</span>
+            <span class="ctime">2h</span>
+            <span class="hoverbtns"><button class="hbtn">✓</button><button class="hbtn">↗</button></span>
+          </div>
+          <div class="crow2"><span class="udot"></span><span class="ddone">✓</span><span class="sender">Lena Ortiz</span><span class="snippet">can we move the portfolio review to Thursday?</span></div>
+          <div class="crow3"><span class="spark">✦</span><span class="why">Scheduling ask; your Thursday 2pm is currently free.</span></div>
+        </div>
+
+        <!-- P2 · seen -->
+        <div class="card p2 seen" data-nav>
+          <div class="crow1">
+            <span class="chip c2">P2</span>
+            <span class="ws a">A</span><span class="chan">#design-crit</span><span class="kind">@</span>
+            <span class="ctime">5h</span>
+            <span class="hoverbtns"><button class="hbtn">✓</button><button class="hbtn">↗</button></span>
+          </div>
+          <div class="crow2"><span class="udot"></span><span class="ddone">✓</span><span class="sender">Priya Nair</span><span class="snippet">would love your take on the onboarding flow v2 before Friday</span></div>
+          <div class="crow3"><span class="spark">✦</span><span class="why">Feedback requested; no hard deadline stated.</span></div>
+        </div>
+
+        <!-- P3 · seen -->
+        <div class="card p3 seen" data-nav>
+          <div class="crow1">
+            <span class="chip c3">P3</span>
+            <span class="ws n">N</span><span class="chan">#random</span><span class="kind">@</span>
+            <span class="ctime">1d</span>
+            <span class="hoverbtns"><button class="hbtn">✓</button><button class="hbtn">↗</button></span>
+          </div>
+          <div class="crow2"><span class="udot"></span><span class="ddone">✓</span><span class="sender">Tom Baker</span><span class="snippet">settling a debate — best taco spot near the office?</span></div>
+          <div class="crow3"><span class="spark">✦</span><span class="why">Social; no action needed.</span></div>
+        </div>
+
+      </div>
+      <div class="feedfoot"><b>j/k</b> move · <b>enter</b> open · <b>e</b> done · <b>u</b> unseen · <b>c</b> chat · <b>s</b> slack · <b>?</b> help</div>
+    </div>
+
+    <!-- ================= THREAD ================= -->
+    <div class="pane thread">
+      <div class="thead">
+        <span class="ws n">N</span>
+        <span class="title">#proj-atlas</span>
+        <span class="sub">mention · nimbus · 9 messages · updated 14:22</span>
+        <div class="tactions">
+          <button class="btn primary">Discuss with Claude<span class="key">c</span></button>
+          <button class="btn">Open in Slack<span class="key">s</span></button>
+          <button class="btn">Done<span class="key">e</span></button>
+          <button class="btn">⋯</button>
+        </div>
+      </div>
+
+      <div class="tbody">
+
+        <!-- analysis card -->
+        <div class="analysis">
+          <div class="stalebanner">⚠ 2 replies since this analysis — re-analyzing…</div>
+          <div class="abody">
+            <div class="awhy"><span class="chip c1">P1</span> Blocked on you: key rotation before the 3pm infra sync</div>
+            <div class="asec"><b>Summary</b> — Maya's deploy of the atlas service is blocked because the staging API keys expired this morning. She has asked you directly to rotate them today; the team is waiting on the deploy to test the new ingestion path.</div>
+            <div class="asec action-row">
+              <span><b>Suggested action</b> — Confirm you'll rotate the staging keys right after the 3pm infra sync, and link the rotation runbook.</span>
+              <button class="draftbtn">Draft this reply →</button>
+            </div>
+            <div class="asec"><b>Context</b>
+              <ul class="ctx">
+                <li><span class="src">calendar</span>"Infra sync" with Maya Chen today, 3:00–3:30</li>
+                <li><span class="src">asana</span>Task "Rotate prod API keys" — due Fri, assigned to you</li>
+              </ul>
+            </div>
+          </div>
+          <div class="ameta">analyzed 6m ago · covered through 14:18 · <a href="#">re-analyze</a></div>
+        </div>
+
+        <!-- transcript -->
+        <div class="divider">Today</div>
+
+        <div class="msg first">
+          <div class="avatar">MC</div>
+          <div>
+            <div class="mhead"><span class="mauthor">Maya Chen</span><span class="mtime">14:02</span></div>
+            <div class="mtext">hey <span class="mention">@Isha Mahendra</span> — can you rotate the staging API keys today? the atlas deploy is blocked on it</div>
+          </div>
+        </div>
+        <div class="msg">
+          <div class="avatar ghost"></div>
+          <div class="mtext">context: they expired this morning, staging only. here's the <a href="#">rotation runbook</a></div>
+        </div>
+
+        <div class="msg first">
+          <div class="avatar">IM</div>
+          <div>
+            <div class="mhead"><span class="mauthor me">Isha Mahendra <span class="you">(you)</span></span><span class="mtime">14:10</span></div>
+            <div class="mtext">looking — is prod affected or just staging?</div>
+          </div>
+        </div>
+
+        <div class="msg first">
+          <div class="avatar">MC</div>
+          <div>
+            <div class="mhead"><span class="mauthor">Maya Chen</span><span class="mtime">14:15</span></div>
+            <div class="mtext">just staging 🙏 — <span class="code">ATLAS_DEPLOY=paused</span> until then. will bring <span class="emoji-miss">:party-parrot:</span> energy when it ships</div>
+          </div>
+        </div>
+
+        <div class="divider stale-div">new since last analysis</div>
+
+        <div class="msg first">
+          <div class="avatar">MC</div>
+          <div>
+            <div class="mhead"><span class="mauthor">Maya Chen</span><span class="mtime">14:20</span></div>
+            <div class="mtext">update: infra sync moved to 3pm sharp, Sam's joining</div>
+          </div>
+        </div>
+        <div class="msg first">
+          <div class="avatar">SO</div>
+          <div>
+            <div class="mhead"><span class="mauthor">Sam Okafor</span><span class="mtime">14:22</span></div>
+            <div class="mtext">while you're in there, can we also rotate the webhook signing secret?</div>
+          </div>
+        </div>
+
+        <div class="endcta">End of thread · <a href="#">Discuss with Claude</a><span class="key">c</span></div>
+      </div>
+    </div>
+
+    <!-- ================= CHAT ================= -->
+    <div class="pane chat">
+      <div class="chead">
+        <span class="who">Claude — #proj-atlas</span>
+        <span class="sess"><i></i>session 9f2c · resumed · 14 msgs</span>
+        <span class="cclose" title="close (esc)">×</span>
+      </div>
+      <div class="cbody">
+        <div class="sysnote">— context loaded: thread + analysis —</div>
+
+        <div class="cmsg user">
+          <div class="clabel">You</div>
+          <div class="bubble">Draft a short reply: I'll rotate keys after the 3pm sync. Check I'm actually free after it.</div>
+        </div>
+
+        <div class="toolrow" title="click to expand args/result">⚙ calendar · list_events <span class="ok">✓</span> 0.8s</div>
+
+        <div class="cmsg claude">
+          <div class="clabel">Claude</div>
+          <div class="bubble">You're clear after the sync — nothing on your calendar from 3:30 on. Sam's webhook-secret ask is covered by the same runbook section, so the draft handles both:<span class="cursor">▍</span></div>
+        </div>
+
+        <div class="draft">
+          <div class="dhead">DRAFT REPLY → #proj-atlas (nimbus) · as you</div>
+          <textarea>On it — I'll rotate the staging keys (and the webhook signing secret) right after our 3pm sync, and post here once it's done. Following the rotation runbook.</textarea>
+          <div class="dactions">
+            <button class="send">Send to #proj-atlas</button>
+            <button class="ghostbtn">Copy</button>
+            <button class="ghostbtn">Discard</button>
+          </div>
+          <div class="dnote">Posts as you via chat.postMessage. Nothing sends without this click.</div>
+        </div>
+      </div>
+      <div class="composer">
+        <textarea placeholder="Message Claude about this thread…"></textarea>
+        <div class="chint">enter to send · shift+enter newline · ⌘. stop</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ================= legend ================= -->
+  <div class="legend">
+    <span class="lg"><span class="sw" style="background:var(--p0)"></span>P0</span>
+    <span class="lg"><span class="sw" style="background:var(--p1)"></span>P1</span>
+    <span class="lg"><span class="sw" style="background:var(--p2)"></span>P2</span>
+    <span class="lg"><span class="sw" style="background:var(--p3)"></span>P3</span>
+    <span class="lg"><span class="sw" style="border:1px dashed var(--text-3)"></span>analyzing</span>
+    <span class="lg"><span style="color:var(--warn)">↻</span>stale analysis</span>
+    <span class="lg"><span class="sw" style="background:var(--accent);border-radius:50%;width:7px;height:7px"></span>unseen</span>
+    <span class="lg"><span style="color:var(--ok)">✓</span>done</span>
+    <span class="note">static mock — thread/chat panes render the selected card · try j k enter e u c</span>
+  </div>
+</div>
+
+<script>
+/* Demo-only keyboard model (reference, not production code):
+   j/k cursor (no status change) · enter mark seen · e done+advance ·
+   u unseen · c toggle chat. Thread/chat panes stay static. */
+(function(){
+  var cards=[].slice.call(document.querySelectorAll('.card[data-nav]'));
+  var i=cards.findIndex(function(c){return c.classList.contains('sel')});
+  function sel(n){
+    if(n<0||n>=cards.length)return;
+    cards[i].classList.remove('sel'); i=n;
+    cards[i].classList.add('sel');
+    cards[i].scrollIntoView({block:'nearest'});
+  }
+  cards.forEach(function(c,n){
+    c.addEventListener('click',function(){ sel(n); c.classList.add('seen'); });
+  });
+  document.addEventListener('keydown',function(e){
+    var t=e.target.tagName;
+    if(t==='TEXTAREA'||t==='INPUT')return;
+    switch(e.key){
+      case 'j': case 'ArrowDown': sel(i+1); e.preventDefault(); break;
+      case 'k': case 'ArrowUp':   sel(i-1); e.preventDefault(); break;
+      case 'Enter': case 'o': cards[i].classList.add('seen'); break;
+      case 'e': cards[i].classList.toggle('done'); if(cards[i].classList.contains('done'))sel(i+1); break;
+      case 'u': cards[i].classList.remove('seen','done'); break;
+      case 'c': document.body.classList.toggle('chat-closed'); break;
+    }
+  });
+})();
+</script>
+</body>
+</html>

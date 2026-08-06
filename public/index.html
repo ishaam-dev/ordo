@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Slack Copilot</title>
+<style>
+  :root {
+    --bg: #16181d;
+    --card: #1f232b;
+    --card-border: #2c313c;
+    --text: #e6e9ef;
+    --muted: #8b93a3;
+    --accent: #6ea8fe;
+    --p0: #f0564f;
+    --p1: #f08c3d;
+    --p2: #e3c33f;
+    --p3: #6f7787;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  header {
+    padding: 18px 24px;
+    border-bottom: 1px solid var(--card-border);
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+  }
+  header h1 { margin: 0; font-size: 18px; font-weight: 650; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  main { max-width: 860px; margin: 0 auto; padding: 20px 16px 60px; }
+  .empty {
+    color: var(--muted);
+    text-align: center;
+    padding: 80px 0;
+    font-size: 15px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 12px;
+  }
+  .card.seen { opacity: 0.75; }
+  .card.done { opacity: 0.45; }
+  .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .badge {
+    flex: none;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 999px;
+    color: #16181d;
+  }
+  .badge.P0 { background: var(--p0); color: #fff; }
+  .badge.P1 { background: var(--p1); }
+  .badge.P2 { background: var(--p2); }
+  .badge.P3 { background: var(--p3); color: #fff; }
+  .badge.none {
+    background: transparent;
+    color: var(--muted);
+    border: 1px dashed var(--muted);
+  }
+  .where { color: var(--muted); font-size: 13px; }
+  .where .ws { color: var(--accent); font-weight: 600; }
+  .kind {
+    font-size: 11px;
+    color: var(--muted);
+    border: 1px solid var(--card-border);
+    border-radius: 4px;
+    padding: 1px 5px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .time { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .snippet { margin: 8px 0 4px; }
+  .snippet .author { font-weight: 600; }
+  .snippet .text { color: var(--text); opacity: 0.9; }
+  .why { color: var(--muted); font-size: 13px; margin: 2px 0 8px; font-style: italic; }
+  .actions { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+  .actions a { color: var(--accent); font-size: 13px; text-decoration: none; }
+  .actions a:hover { text-decoration: underline; }
+  button {
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--card-border);
+    border-radius: 6px;
+    padding: 3px 10px;
+    font-size: 12.5px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  button:hover { color: var(--text); border-color: var(--muted); }
+  .status-label { font-size: 12px; color: var(--muted); margin-left: auto; }
+  .count { color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Slack Copilot</h1>
+  <span class="sub" id="refreshed"></span>
+</header>
+<main>
+  <div id="feed"></div>
+</main>
+<script>
+const feedEl = document.getElementById('feed');
+const refreshedEl = document.getElementById('refreshed');
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+
+function relTime(slackTs) {
+  if (!slackTs) return '';
+  const ms = parseFloat(slackTs) * 1000;
+  if (!isFinite(ms)) return '';
+  const diff = Date.now() - ms;
+  const s = Math.round(diff / 1000);
+  if (s < 45) return 'just now';
+  const m = Math.round(s / 60);
+  if (m < 60) return m + 'm ago';
+  const h = Math.round(m / 60);
+  if (h < 24) return h + 'h ago';
+  const d = Math.round(h / 24);
+  if (d < 7) return d + 'd ago';
+  return new Date(ms).toLocaleDateString();
+}
+
+function snippet(text, max = 180) {
+  const t = String(text ?? '');
+  return t.length > max ? t.slice(0, max) + '…' : t;
+}
+
+function card(item) {
+  const urgency = item.urgency && ['P0','P1','P2','P3'].includes(item.urgency) ? item.urgency : null;
+  const badge = urgency
+    ? '<span class="badge ' + urgency + '">' + urgency + '</span>'
+    : '<span class="badge none">…</span>';
+  const chan = item.kind === 'mention'
+    ? '#' + (item.channel_name ?? '?')
+    : (item.channel_name ?? 'DM');
+  const lm = item.last_message;
+  const author = lm && lm.author_name ? lm.author_name : 'unknown';
+  const statusCls = item.status === 'seen' ? 'seen' : item.status === 'done' ? 'done' : '';
+
+  let buttons = '';
+  if (item.status === 'new') {
+    buttons += '<button data-id="' + item.id + '" data-status="seen">Mark seen</button>';
+  }
+  if (item.status !== 'done') {
+    buttons += '<button data-id="' + item.id + '" data-status="done">Mark done</button>';
+  } else {
+    buttons += '<button data-id="' + item.id + '" data-status="new">Reopen</button>';
+  }
+
+  return '<div class="card ' + statusCls + '">' +
+    '<div class="row">' +
+      badge +
+      '<span class="where"><span class="ws">' + esc(item.team_name ?? item.workspace) + '</span> · ' + esc(chan) + '</span>' +
+      '<span class="kind">' + esc(item.kind) + '</span>' +
+      '<span class="count">' + item.message_count + ' msg' + (item.message_count === 1 ? '' : 's') + '</span>' +
+      '<span class="time">' + esc(relTime(item.last_activity)) + '</span>' +
+    '</div>' +
+    '<div class="snippet"><span class="author">' + esc(author) + ':</span> ' +
+      '<span class="text">' + esc(snippet(lm ? lm.text : '')) + '</span></div>' +
+    (item.why ? '<div class="why">' + esc(item.why) + '</div>' : '') +
+    '<div class="actions">' +
+      (item.permalink ? '<a href="' + esc(item.permalink) + '" target="_blank" rel="noopener">Open in Slack</a>' : '') +
+      buttons +
+      '<span class="status-label">' + esc(item.status) + '</span>' +
+    '</div>' +
+  '</div>';
+}
+
+async function refresh() {
+  try {
+    const res = await fetch('/api/feed');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const items = await res.json();
+    if (!Array.isArray(items) || items.length === 0) {
+      feedEl.innerHTML = '<div class="empty">No items yet — waiting for Slack events</div>';
+    } else {
+      feedEl.innerHTML = items.map(card).join('');
+    }
+    refreshedEl.textContent = 'updated ' + new Date().toLocaleTimeString();
+  } catch (err) {
+    refreshedEl.textContent = 'refresh failed: ' + err.message;
+  }
+}
+
+feedEl.addEventListener('click', async (e) => {
+  const btn = e.target.closest('button[data-id]');
+  if (!btn) return;
+  btn.disabled = true;
+  try {
+    await fetch('/api/thread/' + btn.dataset.id + '/status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: btn.dataset.status }),
+    });
+  } catch (err) { /* next refresh will correct the view */ }
+  refresh();
+});
+
+refresh();
+setInterval(refresh, 8000);
+</script>
+</body>
+</html>
