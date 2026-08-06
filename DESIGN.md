@@ -107,7 +107,7 @@ status and analysis behave identically.
   `users.conversations(public_channel,private_channel)` → `conversations.history` filtered by
   the normal mention rule. Threaded replies never appear in `conversations.history`, so a
   capped number of `conversations.replies` calls covers them.
-- Bounds so a long absence cannot hammer the API: 3-day first lookback, 7-day hard ceiling,
+- Bounds so a long absence cannot hammer the API: 2-day first lookback, 30-day hard ceiling,
   60 DM conversations, 40 channels, 3 pages per conversation, capped reply fetches, calls
   serialized at ~1.2s (`conversations.history` is Tier 3, ~50/min). 429s are handled by the
   Slack client's own Retry-After honouring.

@@ -1,0 +1,729 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Slack Copilot — three ways to make the screen quieter</title>
+<style>
+/* =========================================================================
+   Static comparison mock for docs/ux-declutter.md. One file, no assets, no
+   framework. Fake conversations — shaped like the real feed (long group-chat
+   slugs, bot messages, one urgent thread among many quiet ones) but no real
+   Slack content. Nothing here is wired to anything.
+
+   Light and dark: follows the system by default (prefers-color-scheme) and the
+   buttons at the top force either one, so both can be seen without changing
+   system settings.
+   ========================================================================= */
+
+/* ---------- palettes ---------- */
+:root{
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+}
+/* dark = the app's shipped palette (docs/ux.md §2) */
+@media (prefers-color-scheme: dark){
+  :root{
+    --page:#07090d; --bg:#0d1117; --surface:#151b23; --surface-2:#1d2530; --border:#2a313c;
+    --text:#e6edf3; --text-2:#9aa4b2; --text-3:#646d79;
+    --accent:#4c8dff; --ok:#3fb950; --warn:#e3b341;
+    --p0:#f85149; --p1:#f0883e; --p2:#d29922; --p3:#8b949e;
+    --e0:#f85149; --e1:#f0883e; --e2:#d29922; --e3:#8b949e;
+    --oncolor:#0d1117; --rm:#f85149;
+  }
+}
+@media (prefers-color-scheme: light){
+  :root{
+    --page:#eef1f5; --bg:#ffffff; --surface:#f6f8fa; --surface-2:#eaeef2; --border:#d0d7de;
+    --text:#1f2328; --text-2:#59636e; --text-3:#818b98;
+    --accent:#0969da; --ok:#1a7f37; --warn:#9a6700;
+    --p0:#cf222e; --p1:#a24700; --p2:#7d6000; --p3:#5f6672;
+    --e0:#e5484d; --e1:#f0883e; --e2:#d29922; --e3:#afb8c1;
+    --oncolor:#ffffff; --rm:#cf222e;
+  }
+}
+/* the in-page override always wins over the system preference */
+:root[data-theme="dark"]{
+  --page:#07090d; --bg:#0d1117; --surface:#151b23; --surface-2:#1d2530; --border:#2a313c;
+  --text:#e6edf3; --text-2:#9aa4b2; --text-3:#646d79;
+  --accent:#4c8dff; --ok:#3fb950; --warn:#e3b341;
+  --p0:#f85149; --p1:#f0883e; --p2:#d29922; --p3:#8b949e;
+  --e0:#f85149; --e1:#f0883e; --e2:#d29922; --e3:#8b949e;
+  --oncolor:#0d1117; --rm:#f85149;
+}
+:root[data-theme="light"]{
+  --page:#eef1f5; --bg:#ffffff; --surface:#f6f8fa; --surface-2:#eaeef2; --border:#d0d7de;
+  --text:#1f2328; --text-2:#59636e; --text-3:#818b98;
+  --accent:#0969da; --ok:#1a7f37; --warn:#9a6700;
+  --p0:#cf222e; --p1:#a24700; --p2:#7d6000; --p3:#5f6672;
+  --e0:#e5484d; --e1:#f0883e; --e2:#d29922; --e3:#afb8c1;
+  --oncolor:#ffffff; --rm:#cf222e;
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--page);color:var(--text);font:13px/1.45 var(--sans);padding:22px 22px 64px}
+
+/* ---------- page header ---------- */
+.page-head{max-width:1560px;margin:0 auto 20px}
+.page-head h1{font-size:19px;font-weight:700;letter-spacing:-.01em}
+.page-head .sub{color:var(--text-2);font-size:13px;margin-top:5px;max-width:78ch;line-height:1.6}
+.controls{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-top:14px}
+.seg{display:flex;border:1px solid var(--border);border-radius:7px;overflow:hidden;background:var(--bg)}
+.seg button{font:12.5px var(--sans);padding:5px 13px;background:none;border:none;color:var(--text-2);
+  cursor:pointer;border-left:1px solid var(--border)}
+.seg button:first-child{border-left:none}
+.seg button[aria-pressed="true"]{background:var(--surface-2);color:var(--text);font-weight:650}
+.ctl-label{font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--text-3);font-weight:700}
+.chkwrap{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--text-2);cursor:pointer;user-select:none}
+.diffkey{display:flex;gap:14px;font-size:11.5px;color:var(--text-3);flex-wrap:wrap}
+.diffkey span{display:flex;align-items:center;gap:6px}
+.swatch{width:16px;height:11px;border-radius:3px;display:inline-block}
+.swatch.rm{border:1px dashed var(--rm)}
+.swatch.new{border:1px dashed var(--accent)}
+.caveat{margin-top:12px;font-size:11.5px;color:var(--text-3);max-width:80ch;line-height:1.6}
+
+/* ---------- the four columns ---------- */
+.grid{max-width:1560px;margin:0 auto;display:grid;gap:26px 22px;
+  grid-template-columns:repeat(auto-fit,minmax(360px,1fr));align-items:start}
+.col{min-width:0}
+.colhead{margin-bottom:11px;max-width:380px;margin-left:auto;margin-right:auto}
+.tagrow{display:flex;align-items:baseline;gap:9px}
+.tag{font:700 10px/16px var(--mono);letter-spacing:.08em;padding:1px 7px;border-radius:4px;
+  background:var(--surface-2);color:var(--text-2);flex:none}
+.tag.pick{background:var(--accent);color:var(--oncolor)}
+.colhead h2{font-size:14.5px;font-weight:700}
+.colhead .lede{font-size:12.5px;color:var(--text-2);margin-top:6px;line-height:1.55}
+
+/* the fake app window */
+.frame{width:380px;max-width:100%;margin:0 auto;height:600px;display:flex;flex-direction:column;
+  background:var(--bg);border:1px solid var(--border);border-radius:9px;overflow:hidden}
+@media (prefers-color-scheme: light){ :root:not([data-theme="dark"]) .frame{box-shadow:0 1px 3px rgba(16,22,26,.09)} }
+:root[data-theme="light"] .frame{box-shadow:0 1px 3px rgba(16,22,26,.09)}
+:root[data-theme="dark"] .frame{box-shadow:none}
+
+.topbar{flex:none;display:flex;align-items:center;gap:7px;padding:7px 9px;
+  border-bottom:1px solid var(--border);background:var(--surface);overflow:hidden}
+.brand{font-weight:700;font-size:11px;flex:none}
+.brand i{color:var(--accent);font-style:normal}
+.tabs{display:flex;gap:1px;flex:none}
+.tabs b,.tabs span{font-size:10.5px;padding:2px 6px;border-radius:5px;color:var(--text-3);font-weight:400}
+.tabs b{background:var(--surface-2);color:var(--text);font-weight:650}
+.tbright{margin-left:auto;display:flex;align-items:center;gap:6px;flex:none}
+.qchip{font:9.5px/15px var(--mono);color:var(--text-3);border:1px solid var(--border);border-radius:9px;padding:0 6px;flex:none}
+.wsdot{width:6px;height:6px;border-radius:50%;background:var(--ok);display:inline-block;flex:none}
+.helpb{font:9.5px/15px var(--mono);color:var(--text-3);border:1px solid var(--border);
+  border-radius:4px;padding:0 5px;flex:none;white-space:nowrap}
+
+.feedpane{flex:1;display:flex;flex-direction:column;min-height:0}
+.sortrow{flex:none;display:flex;align-items:center;gap:7px;padding:6px 9px;border-bottom:1px solid var(--border)}
+.sortrow .lab{font-size:10.5px;color:var(--text-3)}
+.sortrow .sseg{display:flex;border:1px solid var(--border);border-radius:6px;overflow:hidden}
+.sortrow .sseg i{font-style:normal;font-size:11px;padding:2px 7px;color:var(--text-2);border-left:1px solid var(--border)}
+.sortrow .sseg i:first-child{border-left:none}
+.sortrow .sseg i.on{background:var(--surface-2);color:var(--text);font-weight:650}
+
+.list{flex:1;overflow-y:auto;padding:5px 6px}
+.list::-webkit-scrollbar{width:8px}
+.list::-webkit-scrollbar-thumb{background:var(--surface-2);border-radius:5px}
+
+.glabel{font:700 9.5px/1.5 var(--sans);letter-spacing:.09em;text-transform:uppercase;color:var(--text-3);
+  padding:8px 6px 3px;display:flex;align-items:center;gap:6px}
+.glabel .right{margin-left:auto;font-weight:400;letter-spacing:.02em;text-transform:none;font-size:10px}
+.glabel .caret{font-size:9px}
+.glabel.needs{color:var(--text)}
+.glabel .cnt{font-family:var(--mono)}
+
+.card{position:relative;background:var(--surface);border:1px solid var(--border);border-radius:6px;
+  padding:7px 9px 7px 13px;margin:4px 0}
+.card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;border-radius:6px 0 0 6px;background:var(--edge,transparent)}
+.card.k0{--edge:var(--e0)} .card.k1{--edge:var(--e1)} .card.k2{--edge:var(--e2)} .card.k3{--edge:var(--e3)}
+.card.sel{background:var(--surface-2);outline:1px solid var(--accent);outline-offset:-1px}
+
+.r1{display:flex;align-items:center;gap:5px;font-size:10.5px;color:var(--text-3);margin-bottom:3px;min-width:0}
+.chip{font:700 9.5px/15px var(--mono);border-radius:4px;padding:0 4px;flex:none;border:1px solid transparent}
+.chip.c0{background:var(--p0);color:var(--oncolor);border-color:var(--p0)}
+.chip.c1{border-color:var(--p1);color:var(--p1)}
+.chip.c2{border-color:var(--p2);color:var(--p2)}
+.chip.c3{border-color:var(--p3);color:var(--p3)}
+.chip.pend{border:1px dashed var(--text-3);color:var(--text-3)}
+.ws{font:700 8.5px/13px var(--mono);color:var(--oncolor);border-radius:3px;width:13px;height:13px;
+  display:inline-flex;align-items:center;justify-content:center;flex:none;background:#39c5cf}
+.ws.b{background:#bc8cff}
+:root[data-theme="light"] .ws{background:#0f8b96} :root[data-theme="light"] .ws.b{background:#7c4dd6}
+.chan{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-2);max-width:19ch;flex:none}
+.kind{color:var(--text-3);flex:none}
+.time{margin-left:auto;font:10px var(--mono);flex:none;white-space:nowrap;color:var(--text-3)}
+
+.r2{display:flex;align-items:center;gap:5px;white-space:nowrap;overflow:hidden;min-width:0}
+.udot{width:6px;height:6px;border-radius:50%;background:var(--accent);flex:none}
+.who{font-weight:650;flex:none;max-width:16ch;overflow:hidden;text-overflow:ellipsis;font-size:12.5px}
+.snip{color:var(--text);overflow:hidden;text-overflow:ellipsis;font-size:12.5px}
+
+.r3{display:flex;gap:5px;align-items:center;white-space:nowrap;overflow:hidden;margin-top:2px;min-width:0}
+.spark{color:var(--accent);font-size:9.5px;flex:none}
+.why{color:var(--text-2);overflow:hidden;text-overflow:ellipsis;font-size:11.5px}
+.why.wait{font-style:italic;color:var(--text-3)}
+
+/* --- direction B / C card: two lines, sentence allowed to finish --- */
+.card.two .r1{margin-bottom:4px;font-size:11px;color:var(--text-2)}
+.card.two .rwho{font-weight:650;color:var(--text);flex:none;max-width:15ch;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;font-size:12.5px}
+.card.two .with{color:var(--text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.whyfull{color:var(--text-2);font-size:12px;line-height:1.42;display:-webkit-box;-webkit-line-clamp:2;
+  -webkit-box-orient:vertical;overflow:hidden}
+.card.two.sel .whyfull{color:var(--text)}
+/* wraps rather than truncating — the whole point of these proposals */
+.suggest{margin-top:6px;font-size:11.5px;line-height:1.45;color:var(--text-3)}
+.suggest b{color:var(--text-2);font-weight:650;margin-right:5px}
+
+/* --- direction C: the quiet one-liners --- */
+.qrow{display:flex;align-items:center;gap:7px;padding:4px 9px 4px 13px;border-radius:5px;min-width:0}
+.qrow:nth-child(even){background:var(--surface)}
+.qlv{font:700 9px/13px var(--mono);color:var(--text-3);flex:none;width:16px}
+.qlv.l2{color:var(--p2)} .qlv.l3{color:var(--p3)}
+.qwho{font-size:11.5px;color:var(--text-2);flex:none;max-width:13ch;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.qtext{font-size:11.5px;color:var(--text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.qtime{margin-left:auto;font:9.5px var(--mono);color:var(--text-3);flex:none}
+
+/* --- the two bottom strips (Now only) --- */
+.keystrip{flex:none;border-top:1px solid var(--border);padding:5px 10px;font:9.5px var(--mono);
+  color:var(--text-3);white-space:nowrap;overflow:hidden}
+.keystrip b{color:var(--text-2)}
+.legendstrip{flex:none;display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  border-top:1px solid var(--border);background:var(--surface);padding:5px 10px;font-size:9.5px;color:var(--text-3)}
+.legendstrip .lg{display:flex;align-items:center;gap:4px}
+.sw{width:9px;height:9px;border-radius:3px;display:inline-block}
+.legendstrip .note{margin-left:auto;font-family:var(--mono)}
+
+/* ---------- notes under each frame ---------- */
+.notes{max-width:380px;margin:12px auto 0;font-size:12px;line-height:1.55}
+.notes p{margin-bottom:7px;color:var(--text-2)}
+.notes b{color:var(--text);font-weight:650}
+.notes .cost b{color:var(--warn)}
+.notes .work{color:var(--text-3);font-size:11.5px}
+
+/* ---------- "show what changed" ---------- */
+.rm-mark,.new-mark{outline:0 dashed transparent;outline-offset:2px;transition:outline-color .12s}
+body.diff .rm-mark{outline:1px dashed var(--rm)}
+body.diff .new-mark{outline:1px dashed var(--accent)}
+
+footer{max-width:1560px;margin:34px auto 0;font-size:12px;color:var(--text-3);line-height:1.65;
+  border-top:1px solid var(--border);padding-top:14px}
+footer b{color:var(--text-2)}
+</style>
+</head>
+<body>
+
+<div class="page-head">
+  <h1>Slack Copilot — three ways to make the screen quieter</h1>
+  <p class="sub">
+    Four versions of the message list, side by side. The first is what you have today; the other three are the
+    options. Same conversations in all four (made-up names, but the same shapes as your real ones — long group-chat
+    names, bot reminders, one thread that needs you among nine that don't). Point at the one you want.
+  </p>
+
+  <div class="controls">
+    <span class="ctl-label">Theme</span>
+    <div class="seg" id="theme" role="group" aria-label="Theme">
+      <button data-t="auto" aria-pressed="true">Auto</button>
+      <button data-t="light" aria-pressed="false">Light</button>
+      <button data-t="dark" aria-pressed="false">Dark</button>
+    </div>
+    <label class="chkwrap"><input type="checkbox" id="diff"> Show what changed</label>
+    <span class="diffkey">
+      <span><i class="swatch rm"></i> goes away</span>
+      <span><i class="swatch new"></i> new or moved</span>
+    </span>
+  </div>
+
+  <p class="caveat">
+    Two things to allow for: the top bar is squeezed into the column width here — in the real app it runs across the
+    whole window. And the light colours are a stand-in so you can judge the layout; someone else is picking the real
+    light palette right now.
+  </p>
+</div>
+
+<div class="grid">
+
+  <!-- ================================================================== NOW -->
+  <section class="col">
+    <div class="colhead">
+      <div class="tagrow"><span class="tag">NOW</span><h2>What you have today</h2></div>
+      <p class="lede">Three lines per conversation, a row of Sort buttons, and two teaching strips along the bottom.</p>
+    </div>
+
+    <div class="frame">
+      <div class="topbar">
+        <span class="brand">Slack<i>·</i>Copilot</span>
+        <span class="tabs"><b>Inbox</b><span>Done</span><span>All</span></span>
+        <span class="tbright">
+          <span class="qchip">Claude ✓</span>
+          <i class="wsdot"></i><i class="wsdot"></i>
+          <span class="helpb">?</span>
+        </span>
+      </div>
+
+      <div class="feedpane">
+        <div class="sortrow rm-mark">
+          <span class="lab">Sort</span>
+          <span class="sseg"><i class="on">Priority</i><i>Newest</i><i>Oldest</i></span>
+        </div>
+
+        <div class="list">
+          <div class="glabel"><span>Analyzing · 1</span></div>
+          <div class="card">
+            <div class="r1"><span class="chip pend">…</span><span class="ws">A</span>
+              <span class="chan">DM · Marcy Bell</span><span class="time">2m</span></div>
+            <div class="r2"><span class="udot"></span><span class="who">Marcy Bell</span>
+              <span class="snip">quick one before tomorrow — did the Q3 accrual file ever come back from Erin?</span></div>
+            <div class="r3"><span class="spark">✦</span><span class="why wait">Analyzing…</span></div>
+          </div>
+
+          <div class="glabel">Inbox</div>
+
+          <div class="card k1 sel">
+            <div class="r1"><span class="chip c1">P1</span><span class="ws">A</span>
+              <span class="chan">DM · mpdm-dana--priya--you-1</span><span class="time">5h</span></div>
+            <div class="r2"><span class="who">Priya Raman</span>
+              <span class="snip rm-mark">Invoice 2026 07 7211-2 regarding Meraki, not familiar either. I believe as far as it has the HC-DL codes you'll be able to identify it later</span></div>
+            <div class="r3"><span class="spark">✦</span><span class="why rm-mark">Dana assigned you to fix the invoice coding; Priya is holding an email reply pending that answer</span></div>
+          </div>
+
+          <div class="card k2">
+            <div class="r1"><span class="chip c2">P2</span><span class="ws">A</span>
+              <span class="chan">DM · Dana Whitfield</span><span class="time">4h</span></div>
+            <div class="r2"><span class="who">You</span>
+              <span class="snip">Ramp transactions have synced to QBO for July, let me know if anything looks off before I close it</span></div>
+            <div class="r3"><span class="spark">✦</span><span class="why">You sent the last message; ball is mostly in Dana's court, remaining tasks are non-blocking this week</span></div>
+          </div>
+
+          <div class="card k2">
+            <div class="r1"><span class="chip c2">P2</span><span class="ws">A</span>
+              <span class="chan">#ops-weekly</span><span class="kind">@</span><span class="time">7h</span></div>
+            <div class="r2"><span class="who">Dana Whitfield</span>
+              <span class="snip">Saved here: Ecosystem Lunch Tracker — can you write up the change we approved on Tuesday?</span></div>
+            <div class="r3"><span class="spark">✦</span><span class="why">Senior ask to document + implement an approved change; no deadline and docs already saved by Dana</span></div>
+          </div>
+
+          <div class="card k2">
+            <div class="r1"><span class="chip c2">P2</span><span class="ws">A</span>
+              <span class="chan">DM · mpdm-erin--dana--you-1</span><span class="time">7h</span></div>
+            <div class="r2"><span class="who">Dana Whitfield</span>
+              <span class="snip">Fund II is earlier, GP, not sure</span></div>
+            <div class="r3"><span class="spark">✦</span><span class="why">CFO flagged your PC cadence memo isn't board-ready; feedback needed but no same-day deadline, and it's 8pm</span></div>
+          </div>
+
+          <div class="card k2">
+            <div class="r1"><span class="chip c2">P2</span><span class="ws">A</span>
+              <span class="chan">DM · Ramp</span><span class="time">11h</span></div>
+            <div class="r2"><span class="who">Ramp</span>
+              <span class="snip">:receipt: Review 7 transactions — $10.95 at Anthropic and 6 more from last week</span></div>
+            <div class="r3"><span class="spark">✦</span><span class="why">Automated Ramp reminder to review 7 routine expense transactions; no deadline or blocker</span></div>
+          </div>
+
+          <div class="card k2">
+            <div class="r1"><span class="chip c2">P2</span><span class="ws">A</span>
+              <span class="chan">DM · mpdm-nina--dana--marcy--you-1</span><span class="time">Tue</span></div>
+            <div class="r2"><span class="who">Nina Alcott</span>
+              <span class="snip">Hmm I have no context for these sorry</span></div>
+            <div class="r3"><span class="spark">✦</span><span class="why">Expense reconciliation question aimed at another teammate; no deadline, nobody blocked on you</span></div>
+          </div>
+
+          <div class="card k2">
+            <div class="r1"><span class="chip c2">P2</span><span class="ws">A</span>
+              <span class="chan">DM · Asana</span><span class="time">Tue</span></div>
+            <div class="r2"><span class="who">Asana</span>
+              <span class="snip">:inbox_tray: https://app.asana.com/app/asana/12088/list/9931</span></div>
+            <div class="r3"><span class="spark">✦</span><span class="why">Automated Asana bot notifications; assigned tasks with some past-due dates but no human waiting on a reply</span></div>
+          </div>
+
+          <div class="card k3">
+            <div class="r1"><span class="chip c3">P3</span><span class="ws">A</span>
+              <span class="chan">DM · mpdm-dana--eli--erin--you-1</span><span class="time">4h</span></div>
+            <div class="r2"><span class="who">Eli Chen</span>
+              <span class="snip">ok! i'll report once i'm done</span></div>
+            <div class="r3"><span class="spark">✦</span><span class="why">Status note from Eli promising a follow-up; no question or ask directed at you</span></div>
+          </div>
+
+          <div class="card k3">
+            <div class="r1"><span class="chip c3">P3</span><span class="ws">A</span>
+              <span class="chan">DM · Sam Okafor</span><span class="time">5h</span></div>
+            <div class="r2"><span class="who">Sam Okafor</span>
+              <span class="snip">you're official!</span></div>
+            <div class="r3"><span class="spark">✦</span><span class="why">Bio page is live; you already approved the copy and sent the photo — nothing left to do</span></div>
+          </div>
+
+          <div class="card k3">
+            <div class="r1"><span class="chip c3">P3</span><span class="ws b">B</span>
+              <span class="chan">DM · mpdm-erin--dana--you-1</span><span class="time">7h</span></div>
+            <div class="r2"><span class="who">Erin Vance</span>
+              <span class="snip">thanks, all sorted</span></div>
+            <div class="r3"><span class="spark">✦</span><span class="why">Request was handled by Dana and Erin confirmed it's resolved; no action left for you</span></div>
+          </div>
+        </div>
+
+        <div class="keystrip rm-mark"><b>j/k</b> move · <b>enter</b> open · <b>e</b> done · <b>u</b> unseen · <b>c</b> chat · <b>s</b> slack</div>
+      </div>
+
+      <div class="legendstrip rm-mark">
+        <span class="lg"><i class="sw" style="background:var(--e0)"></i>P0</span>
+        <span class="lg"><i class="sw" style="background:var(--e1)"></i>P1</span>
+        <span class="lg"><i class="sw" style="background:var(--e2)"></i>P2</span>
+        <span class="lg"><i class="sw" style="background:var(--e3)"></i>P3</span>
+        <span class="lg"><i class="sw" style="border:1px dashed var(--text-3)"></i>analyzing</span>
+        <span class="lg"><i style="color:var(--warn)">↻</i>stale</span>
+        <span class="lg"><i class="sw" style="background:var(--accent);border-radius:50%;width:7px;height:7px"></i>unseen</span>
+        <span class="note">10 threads</span>
+      </div>
+    </div>
+
+    <div class="notes">
+      <p><b>The problem, visible above:</b> every one of Claude's sentences stops at a "…" — and the bit that got cut
+        is the bit that says whether you need to care ("…no deadline or blocker", "…nothing left to do").</p>
+      <p>And the one thread that actually needs you looks exactly like the nine that don't.</p>
+    </div>
+  </section>
+
+  <!-- ==================================================================== A -->
+  <section class="col">
+    <div class="colhead">
+      <div class="tagrow"><span class="tag">A</span><h2>Trim the frame</h2></div>
+      <p class="lede">Leave the conversations exactly as they are; delete the furniture around them.</p>
+    </div>
+
+    <div class="frame">
+      <div class="topbar">
+        <span class="brand">Slack<i>·</i>Copilot</span>
+        <span class="tabs"><b>Inbox</b><span>Done</span><span>All</span></span>
+        <span class="tbright">
+          <span class="qchip">Claude ✓</span>
+          <i class="wsdot"></i><i class="wsdot"></i>
+          <span class="helpb new-mark">? keys</span>
+        </span>
+      </div>
+
+      <div class="feedpane">
+        <div class="list">
+          <div class="glabel"><span>Analyzing · 1</span></div>
+          <div class="card">
+            <div class="r1"><span class="chip pend">…</span><span class="ws">A</span>
+              <span class="chan">DM · Marcy Bell</span><span class="time">2m</span></div>
+            <div class="r2"><span class="udot"></span><span class="who">Marcy Bell</span>
+              <span class="snip">quick one before tomorrow — did the Q3 accrual file ever come back from Erin?</span></div>
+            <div class="r3"><span class="spark">✦</span><span class="why wait">Analyzing…</span></div>
+          </div>
+
+          <div class="glabel new-mark"><span>Inbox · most urgent first</span><span class="caret">▾</span>
+            <span class="right">10 threads · 20:31</span></div>
+
+          <div class="card k1 sel">
+            <div class="r1"><span class="chip c1">P1</span><span class="ws">A</span>
+              <span class="chan">DM · mpdm-dana--priya--you-1</span><span class="time">5h</span></div>
+            <div class="r2"><span class="who">Priya Raman</span>
+              <span class="snip">Invoice 2026 07 7211-2 regarding Meraki, not familiar either. I believe as far as it has the HC-DL codes you'll be able to identify it later</span></div>
+            <div class="r3"><span class="spark">✦</span><span class="why">Dana assigned you to fix the invoice coding; Priya is holding an email reply pending that answer</span></div>
+          </div>
+
+          <div class="card k2">
+            <div class="r1"><span class="chip c2">P2</span><span class="ws">A</span>
+              <span class="chan">DM · Dana Whitfield</span><span class="time">4h</span></div>
+            <div class="r2"><span class="who">You</span>
+              <span class="snip">Ramp transactions have synced to QBO for July, let me know if anything looks off before I close it</span></div>
+            <div class="r3"><span class="spark">✦</span><span class="why">You sent the last message; ball is mostly in Dana's court, remaining tasks are non-blocking this week</span></div>
+          </div>
+
+          <div class="card k2">
+            <div class="r1"><span class="chip c2">P2</span><span class="ws">A</span>
+              <span class="chan">#ops-weekly</span><span class="kind">@</span><span class="time">7h</span></div>
+            <div class="r2"><span class="who">Dana Whitfield</span>
+              <span class="snip">Saved here: Ecosystem Lunch Tracker — can you write up the change we approved on Tuesday?</span></div>
+            <div class="r3"><span class="spark">✦</span><span class="why">Senior ask to document + implement an approved change; no deadline and docs already saved by Dana</span></div>
+          </div>
+
+          <div class="card k2">
+            <div class="r1"><span class="chip c2">P2</span><span class="ws">A</span>
+              <span class="chan">DM · mpdm-erin--dana--you-1</span><span class="time">7h</span></div>
+            <div class="r2"><span class="who">Dana Whitfield</span>
+              <span class="snip">Fund II is earlier, GP, not sure</span></div>
+            <div class="r3"><span class="spark">✦</span><span class="why">CFO flagged your PC cadence memo isn't board-ready; feedback needed but no same-day deadline, and it's 8pm</span></div>
+          </div>
+
+          <div class="card k2">
+            <div class="r1"><span class="chip c2">P2</span><span class="ws">A</span>
+              <span class="chan">DM · Ramp</span><span class="time">11h</span></div>
+            <div class="r2"><span class="who">Ramp</span>
+              <span class="snip">:receipt: Review 7 transactions — $10.95 at Anthropic and 6 more from last week</span></div>
+            <div class="r3"><span class="spark">✦</span><span class="why">Automated Ramp reminder to review 7 routine expense transactions; no deadline or blocker</span></div>
+          </div>
+
+          <div class="card k2">
+            <div class="r1"><span class="chip c2">P2</span><span class="ws">A</span>
+              <span class="chan">DM · mpdm-nina--dana--marcy--you-1</span><span class="time">Tue</span></div>
+            <div class="r2"><span class="who">Nina Alcott</span>
+              <span class="snip">Hmm I have no context for these sorry</span></div>
+            <div class="r3"><span class="spark">✦</span><span class="why">Expense reconciliation question aimed at another teammate; no deadline, nobody blocked on you</span></div>
+          </div>
+
+          <div class="card k2">
+            <div class="r1"><span class="chip c2">P2</span><span class="ws">A</span>
+              <span class="chan">DM · Asana</span><span class="time">Tue</span></div>
+            <div class="r2"><span class="who">Asana</span>
+              <span class="snip">:inbox_tray: https://app.asana.com/app/asana/12088/list/9931</span></div>
+            <div class="r3"><span class="spark">✦</span><span class="why">Automated Asana bot notifications; assigned tasks with some past-due dates but no human waiting on a reply</span></div>
+          </div>
+
+          <div class="card k3">
+            <div class="r1"><span class="chip c3">P3</span><span class="ws">A</span>
+              <span class="chan">DM · mpdm-dana--eli--erin--you-1</span><span class="time">4h</span></div>
+            <div class="r2"><span class="who">Eli Chen</span>
+              <span class="snip">ok! i'll report once i'm done</span></div>
+            <div class="r3"><span class="spark">✦</span><span class="why">Status note from Eli promising a follow-up; no question or ask directed at you</span></div>
+          </div>
+
+          <div class="card k3">
+            <div class="r1"><span class="chip c3">P3</span><span class="ws">A</span>
+              <span class="chan">DM · Sam Okafor</span><span class="time">5h</span></div>
+            <div class="r2"><span class="who">Sam Okafor</span>
+              <span class="snip">you're official!</span></div>
+            <div class="r3"><span class="spark">✦</span><span class="why">Bio page is live; you already approved the copy and sent the photo — nothing left to do</span></div>
+          </div>
+
+          <div class="card k3">
+            <div class="r1"><span class="chip c3">P3</span><span class="ws b">B</span>
+              <span class="chan">DM · mpdm-erin--dana--you-1</span><span class="time">7h</span></div>
+            <div class="r2"><span class="who">Erin Vance</span>
+              <span class="snip">thanks, all sorted</span></div>
+            <div class="r3"><span class="spark">✦</span><span class="why">Request was handled by Dana and Erin confirmed it's resolved; no action left for you</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="notes">
+      <p><b>Gone:</b> the Sort row, the keyboard-hint strip, the colour legend.
+        The Sort buttons move into the list heading, which now reads "Inbox · most urgent first ▾" and carries the
+        thread count on the right.</p>
+      <p class="cost"><b>Costs you:</b> the shortcuts and the colour meanings now live behind <b>? keys</b> in the top
+        bar instead of along the bottom. And nothing about the conversations themselves changes — Claude's sentence
+        is still cut in half.</p>
+      <p class="work"><b>Work:</b> Small — a couple of hours, easily undone.</p>
+    </div>
+  </section>
+
+  <!-- ==================================================================== B -->
+  <section class="col">
+    <div class="colhead">
+      <div class="tagrow"><span class="tag">B</span><h2>Let the sentence finish</h2></div>
+      <p class="lede">Two lines instead of three — drop the message preview and give the space to Claude's verdict so
+        you can read all of it.</p>
+    </div>
+
+    <div class="frame">
+      <div class="topbar">
+        <span class="brand">Slack<i>·</i>Copilot</span>
+        <span class="tabs"><b>Inbox</b><span>Done</span><span>All</span></span>
+        <span class="tbright">
+          <span class="qchip">Claude ✓</span>
+          <i class="wsdot"></i><i class="wsdot"></i>
+          <span class="helpb new-mark">? keys</span>
+        </span>
+      </div>
+
+      <div class="feedpane">
+        <div class="list">
+          <div class="glabel"><span>Analyzing · 1</span></div>
+          <div class="card two">
+            <div class="r1"><span class="chip pend">…</span><span class="rwho">Marcy Bell</span><span class="time">2m</span></div>
+            <div class="whyfull" style="font-style:italic;color:var(--text-3)">Reading this now — about 45 seconds after the last reply.</div>
+          </div>
+
+          <div class="glabel new-mark"><span>Inbox · most urgent first</span><span class="caret">▾</span>
+            <span class="right">10 threads · 20:31</span></div>
+
+          <div class="card k1 two sel">
+            <div class="r1"><span class="chip c1">P1</span><span class="rwho">Priya Raman</span>
+              <span class="with new-mark">with Dana &amp; you</span><span class="time">5h</span></div>
+            <div class="whyfull new-mark">Dana assigned you to fix the invoice coding; Priya is holding an email reply pending that answer</div>
+          </div>
+
+          <div class="card k2 two">
+            <div class="r1"><span class="chip c2">P2</span><span class="rwho">You</span>
+              <span class="with">to Dana Whitfield</span><span class="time">4h</span></div>
+            <div class="whyfull">You sent the last message; ball is mostly in Dana's court, remaining tasks are non-blocking this week</div>
+          </div>
+
+          <div class="card k2 two">
+            <div class="r1"><span class="chip c2">P2</span><span class="rwho">Dana Whitfield</span>
+              <span class="with">in #ops-weekly · @you</span><span class="time">7h</span></div>
+            <div class="whyfull">Senior ask to document + implement an approved change; no deadline and docs already saved by Dana</div>
+          </div>
+
+          <div class="card k2 two">
+            <div class="r1"><span class="chip c2">P2</span><span class="rwho">Dana Whitfield</span>
+              <span class="with new-mark">with Erin &amp; you</span><span class="time">7h</span></div>
+            <div class="whyfull">CFO flagged your PC cadence memo isn't board-ready; feedback needed but no same-day deadline, and it's 8pm</div>
+          </div>
+
+          <div class="card k2 two">
+            <div class="r1"><span class="chip c2">P2</span><span class="rwho">Ramp</span><span class="time">11h</span></div>
+            <div class="whyfull">Automated Ramp reminder to review 7 routine expense transactions; no deadline or blocker</div>
+          </div>
+
+          <div class="card k2 two">
+            <div class="r1"><span class="chip c2">P2</span><span class="rwho">Nina Alcott</span>
+              <span class="with new-mark">with Dana, Marcy &amp; you</span><span class="time">Tue</span></div>
+            <div class="whyfull">Expense reconciliation question aimed at another teammate; no deadline, nobody blocked on you</div>
+          </div>
+
+          <div class="card k2 two">
+            <div class="r1"><span class="chip c2">P2</span><span class="rwho">Asana</span><span class="time">Tue</span></div>
+            <div class="whyfull">Automated Asana bot notifications; assigned tasks with some past-due dates but no human waiting on a reply</div>
+          </div>
+
+          <div class="card k3 two">
+            <div class="r1"><span class="chip c3">P3</span><span class="rwho">Eli Chen</span>
+              <span class="with new-mark">with Dana, Erin &amp; you</span><span class="time">4h</span></div>
+            <div class="whyfull">Status note from Eli promising a follow-up; no question or ask directed at you</div>
+          </div>
+
+          <div class="card k3 two">
+            <div class="r1"><span class="chip c3">P3</span><span class="rwho">Sam Okafor</span><span class="time">5h</span></div>
+            <div class="whyfull">Bio page is live; you already approved the copy and sent the photo — nothing left to do</div>
+          </div>
+
+          <div class="card k3 two">
+            <div class="r1"><span class="chip c3">P3</span><span class="ws b">B</span><span class="rwho">Erin Vance</span>
+              <span class="with new-mark">with Dana &amp; you</span><span class="time">7h</span></div>
+            <div class="whyfull">Request was handled by Dana and Erin confirmed it's resolved; no action left for you</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="notes">
+      <p><b>Gone:</b> everything A removes, plus the message-preview line, the "DM ·" prefix, the ✦ sparkle, and the
+        workspace letter on your main workspace (kept on the other one, see the purple <b>B</b>).</p>
+      <p><b>New:</b> group chats are named after the people in them ("with Dana &amp; you") instead of
+        <span style="font-family:var(--mono);font-size:11px">mpdm-dana--priya--you-1</span> — and Claude's sentence
+        now wraps onto a second line instead of being cut.</p>
+      <p class="cost"><b>Costs you:</b> you can't see what somebody literally typed without opening the thread. If
+        you scan by "what did they say" rather than by Claude's line, expect a week of adjusting.</p>
+      <p class="work"><b>Work:</b> Medium — a day or so, one file, no server change.</p>
+    </div>
+  </section>
+
+  <!-- ==================================================================== C -->
+  <section class="col">
+    <div class="colhead">
+      <div class="tagrow"><span class="tag pick">C · SUGGESTED</span><h2>Needs you / Quiet</h2></div>
+      <p class="lede">Stop giving equal billing to the nine threads that don't need you — put them in a short calm
+        list underneath the one that does.</p>
+    </div>
+
+    <div class="frame">
+      <div class="topbar">
+        <span class="brand">Slack<i>·</i>Copilot</span>
+        <span class="tabs"><b>Inbox</b><span>Done</span><span>All</span></span>
+        <span class="tbright">
+          <span class="qchip">Claude ✓</span>
+          <i class="wsdot"></i><i class="wsdot"></i>
+          <span class="helpb new-mark">? keys</span>
+        </span>
+      </div>
+
+      <div class="feedpane">
+        <div class="list">
+          <div class="glabel"><span>Analyzing · 1</span></div>
+          <div class="card two">
+            <div class="r1"><span class="chip pend">…</span><span class="rwho">Marcy Bell</span><span class="time">2m</span></div>
+            <div class="whyfull" style="font-style:italic;color:var(--text-3)">Reading this now — about 45 seconds after the last reply.</div>
+          </div>
+
+          <div class="glabel needs new-mark"><span>Needs you · <span class="cnt">1</span></span>
+            <span class="right">10 threads · 20:31</span></div>
+
+          <div class="card k1 two sel">
+            <div class="r1"><span class="chip c1">P1</span><span class="rwho">Priya Raman</span>
+              <span class="with">with Dana &amp; you</span><span class="time">5h</span></div>
+            <div class="whyfull">Dana assigned you to fix the invoice coding; Priya is holding an email reply pending that answer</div>
+            <div class="suggest new-mark"><b>Suggested</b>
+              <span>Reply confirming you'll re-code the flagged invoices and set a time with Dana</span></div>
+          </div>
+
+          <div class="glabel new-mark" style="margin-top:14px">
+            <span>Quiet · <span class="cnt">9</span> — nothing waiting on you</span><span class="caret">▾</span></div>
+
+          <div class="qrow new-mark"><span class="qlv l2">P2</span><span class="qwho">You</span>
+            <span class="qtext">Ramp transactions have synced to QBO for July, let me know if…</span><span class="qtime">4h</span></div>
+          <div class="qrow new-mark"><span class="qlv l2">P2</span><span class="qwho">Dana W.</span>
+            <span class="qtext">#ops-weekly — Saved here: Ecosystem Lunch Tracker, can you write…</span><span class="qtime">7h</span></div>
+          <div class="qrow new-mark"><span class="qlv l2">P2</span><span class="qwho">Dana W.</span>
+            <span class="qtext">Fund II is earlier, GP, not sure</span><span class="qtime">7h</span></div>
+          <div class="qrow new-mark"><span class="qlv l2">P2</span><span class="qwho">Ramp</span>
+            <span class="qtext">:receipt: Review 7 transactions — $10.95 at Anthropic and 6 more</span><span class="qtime">11h</span></div>
+          <div class="qrow new-mark"><span class="qlv l2">P2</span><span class="qwho">Nina Alcott</span>
+            <span class="qtext">Hmm I have no context for these sorry</span><span class="qtime">Tue</span></div>
+          <div class="qrow new-mark"><span class="qlv l2">P2</span><span class="qwho">Asana</span>
+            <span class="qtext">:inbox_tray: https://app.asana.com/app/asana/12088/list/9931</span><span class="qtime">Tue</span></div>
+          <div class="qrow new-mark"><span class="qlv l3">P3</span><span class="qwho">Eli Chen</span>
+            <span class="qtext">ok! i'll report once i'm done</span><span class="qtime">4h</span></div>
+          <div class="qrow new-mark"><span class="qlv l3">P3</span><span class="qwho">Sam Okafor</span>
+            <span class="qtext">you're official!</span><span class="qtime">5h</span></div>
+          <div class="qrow new-mark"><span class="qlv l3">P3</span><span class="qwho">Erin Vance</span>
+            <span class="qtext">thanks, all sorted</span><span class="qtime">7h</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="notes">
+      <p><b>Gone:</b> everything A and B remove — and the colour legend stops being needed at all, because the two
+        headings say in words what the colours were trying to say in colour.</p>
+      <p><b>New:</b> the list splits in two. The urgent one keeps a full card and gains Claude's suggested action
+        (already sent to the browser today, currently thrown away). The rest become one calm line each: who, what
+        they said, when. The message preview you lost in B is exactly right down here — you're scanning for
+        surprises, not reading.</p>
+      <p><b>Nothing is hidden:</b> the count is always on the heading, <b>j</b>/<b>k</b> walk both lists as one, and
+        anything Claude hasn't rated yet stays pinned on top. "Quiet" can be collapsed to a single line once you
+        trust it.</p>
+      <p class="cost"><b>Costs you:</b> this is a bet on the rating. If Claude calls something quiet that wasn't,
+        it's now easier to skim past. Where the line falls (P0/P1 above, P2/P3 below) should be something you can
+        move.</p>
+      <p class="work"><b>Work:</b> Medium-to-large — a few days, still one file, still no server change.</p>
+    </div>
+  </section>
+
+</div>
+
+<footer>
+  <p>
+    <b>Whichever one you pick:</b> let Claude's sentence finish. Right now it is cut off on every single card, and
+    measuring the real app, the visible part averages 61% — with the conclusion ("…no deadline or blocker",
+    "…nothing left to do") always in the missing 39%. Fixing that costs nine pixels of card height and is the single
+    biggest change to how calm this screen feels.
+  </p>
+  <p style="margin-top:10px">
+    Written up in full in <b>docs/ux-declutter.md</b>. Nothing has been changed in the app.
+  </p>
+</footer>
+
+<script>
+/* Theme override + the "show what changed" outlines. That is all the script here does. */
+(function () {
+  var root = document.documentElement;
+  var seg = document.getElementById('theme');
+  seg.addEventListener('click', function (e) {
+    var b = e.target.closest('button');
+    if (!b) return;
+    root.setAttribute('data-theme', b.dataset.t);
+    seg.querySelectorAll('button').forEach(function (x) {
+      x.setAttribute('aria-pressed', x === b ? 'true' : 'false');
+    });
+  });
+  document.getElementById('diff').addEventListener('change', function (e) {
+    document.body.classList.toggle('diff', e.target.checked);
+  });
+})();
+</script>
+</body>
+</html>

@@ -24,3 +24,6 @@ data.db-shm
 data.db.bak-*
 
 .DS_Store
+
+# Local Slack CLI state — points at YOUR app installs; useless to anyone else
+.slack/apps.json

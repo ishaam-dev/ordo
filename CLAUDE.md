@@ -33,7 +33,7 @@ Env switches for safe poking: `PORT`, `COPILOT_DB_PATH` (throwaway db), `ANALYZE
 - `manifest.json` — Slack app manifest. Changing scopes/events requires reinstalling the apps (`slack app install`)
 - `.slack/` — Slack CLI project config; `apps.json` maps workspaces → app IDs
 
-Workspaces: **A** = AI Fund (`T5HJJSX45`, app `A0BNC39EF42`), **B** = deeplearning.ai (`T4AUUQHCN`, app `A0BNE28DQC9`).
+Workspace slots **A** and **B** are whatever the local `.env` configures — this repo is per-person, so don't hardcode team or app IDs anywhere. `slack auth list` shows the connected workspaces; `.slack/apps.json` (untracked) maps them to app IDs.
 
 ## Guardrails (non-negotiable)
 
