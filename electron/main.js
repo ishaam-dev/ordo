@@ -20,6 +20,7 @@ const {
   Notification,
   Tray,
   nativeImage,
+  nativeTheme,
   powerMonitor,
   session,
   shell,
@@ -89,6 +90,16 @@ function main() {
     writeJson(userDataFile('window.json'), win.getNormalBounds());
   }
 
+  /**
+   * The colour the window paints before the page does. It has to match what the
+   * page is about to paint or the window flashes the wrong colour on open — and
+   * both pages follow the Mac's appearance setting now, so this does too.
+   * (Same values as the `--bg` tokens in public/index.html / starting.html.)
+   */
+  function windowBackground() {
+    return nativeTheme.shouldUseDarkColors ? '#16181d' : '#eef1f6';
+  }
+
   function createWindow() {
     win = new BrowserWindow({
       title: 'Slack Copilot',
@@ -97,7 +108,7 @@ function main() {
       minWidth: 680,
       minHeight: 440,
       show: false,
-      backgroundColor: '#16181d',
+      backgroundColor: windowBackground(),
       icon: path.join(ASSETS, 'icon.png'),
       webPreferences: {
         contextIsolation: true,
@@ -551,6 +562,13 @@ function main() {
     createWindow();
     createTray();
     reconcileLoginItem();
+
+    // macOS flips appearance on its own at sunset for anyone on "Auto", so an
+    // already-open window has to keep up. The pages re-paint themselves from
+    // CSS; only the window's own backdrop needs telling.
+    nativeTheme.on('updated', () => {
+      if (win && !win.isDestroyed()) win.setBackgroundColor(windowBackground());
+    });
 
     supervisor.on('status', (s) => {
       updateTray();

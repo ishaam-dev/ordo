@@ -2,7 +2,9 @@
    Chat panel styles — owned by public/chat.js (see src/chat.ts for the API).
    Kept out of index.html so the feed/thread UI and this file can be edited
    independently. Uses the palette variables already defined in index.html
-   (docs/ux.md §2); nothing here re-declares them.
+   (docs/ux.md §2); nothing here re-declares them — including the light-mode
+   values, so this file follows the system appearance for free. Never write a
+   literal colour here: it could only be right in one of the two schemes.
    ========================================================================= */
 
 /* ---- message list ---- */
@@ -40,7 +42,7 @@
 
 /* ---- draft-reply card: the only send path ---- */
 .draftcard {
-  border: 1px solid var(--ok); border-radius: 8px; background: rgba(63, 185, 80, .05);
+  border: 1px solid var(--ok); border-radius: 8px; background: var(--wash-ok);
   padding: 9px 10px; display: flex; flex-direction: column; gap: 7px;
 }
 .draftcard.done { border-color: var(--border); background: none; }
@@ -58,7 +60,7 @@
 .draftcard textarea:focus { border-color: var(--ok); }
 .draftcard .drow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .dsend {
-  background: var(--ok); border: none; color: #0d1117; font-weight: 700; font-size: 12px;
+  background: var(--ok); border: none; color: var(--on-fill); font-weight: 700; font-size: 12px;
   border-radius: 6px; padding: 5px 11px; font-family: inherit; cursor: pointer;
 }
 .dsend:disabled { opacity: .45; cursor: not-allowed; }
@@ -75,7 +77,7 @@
 
 /* ---- errors / banners ---- */
 .cbanner {
-  border: 1px solid var(--p0); background: rgba(248, 81, 73, .07); border-radius: 8px;
+  border: 1px solid var(--p0); background: var(--wash-p0-2); border-radius: 8px;
   padding: 8px 10px; font-size: 12px; color: var(--text); display: flex;
   flex-direction: column; gap: 5px;
 }

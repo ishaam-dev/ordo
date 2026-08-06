@@ -5,10 +5,22 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
 <title>Slack Copilot</title>
 <style>
-  :root { color-scheme: dark; }
+  /* Follows the Mac's appearance setting, like the app window it hands over to
+     (electron/main.js sets the window background from nativeTheme to match). */
+  :root {
+    color-scheme: light dark;
+    --bg: #16181d; --text: #e6e9ef; --muted: #8b93a3;
+    --ring: #2c313c; --spin: #6ea8fe; --warn: #f0b03d;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #eef1f6; --text: #11161d; --muted: #58626e;
+      --ring: #d7dde5; --spin: #0a58c8; --warn: #7d5c00;
+    }
+  }
   body {
     margin: 0; height: 100vh; display: flex; align-items: center; justify-content: center;
-    background: #16181d; color: #e6e9ef;
+    background: var(--bg); color: var(--text);
     font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
     -webkit-user-select: none; user-select: none;
   }
@@ -24,16 +36,16 @@
     border: 5px solid transparent; border-top-color: #fff; border-left-color: #fff;
   }
   h1 { font-size: 17px; font-weight: 600; margin: 0 0 8px; }
-  p { margin: 0; color: #8b93a3; font-size: 14px; }
+  p { margin: 0; color: var(--muted); font-size: 14px; }
   p + p { margin-top: 10px; }
   .spinner {
     width: 18px; height: 18px; margin: 22px auto 0;
-    border: 2px solid #2c313c; border-top-color: #6ea8fe; border-radius: 50%;
+    border: 2px solid var(--ring); border-top-color: var(--spin); border-radius: 50%;
     animation: spin 0.9s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
   .hidden { display: none; }
-  .warn h1 { color: #f0b03d; }
+  .warn h1 { color: var(--warn); }
 </style>
 </head>
 <body>
