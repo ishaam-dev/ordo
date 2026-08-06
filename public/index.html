@@ -86,6 +86,7 @@
   .actions { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
   .actions a { color: var(--accent); font-size: 13px; text-decoration: none; }
   .actions a:hover { text-decoration: underline; }
+  .actions .nolink { color: var(--muted); font-size: 13px; text-decoration: line-through; }
   button {
     background: transparent;
     color: var(--muted);
@@ -110,8 +111,28 @@
   <div id="feed"></div>
 </main>
 <script>
+// Injected by the server when it serves this page ('/' or '/index.html'); the copy on
+// disk holds only the placeholder. Every /api/* request must carry it as x-copilot-token.
+const COPILOT_TOKEN = '__COPILOT_TOKEN__';
+
 const feedEl = document.getElementById('feed');
 const refreshedEl = document.getElementById('refreshed');
+
+/** fetch() for /api/*, with the per-run token attached. */
+function apiFetch(url, options) {
+  const opts = options ? Object.assign({}, options) : {};
+  opts.headers = Object.assign({}, opts.headers, { 'x-copilot-token': COPILOT_TOKEN });
+  return fetch(url, opts);
+}
+
+// The token is minted per server run, so a dev-server restart invalidates the copy baked
+// into this page. Reload once (rate-limited, so a genuinely broken token can't loop).
+function handleAuthFailure() {
+  const last = Number(sessionStorage.getItem('copilot-auth-reload') || 0);
+  if (Date.now() - last < 15000) return;
+  sessionStorage.setItem('copilot-auth-reload', String(Date.now()));
+  location.reload();
+}
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({
@@ -140,6 +161,14 @@ function snippet(text, max = 180) {
   return t.length > max ? t.slice(0, max) + '…' : t;
 }
 
+// Permalinks come from Slack (untrusted). esc() blocks attribute breakout but not a
+// javascript:/data: URI, which would run on this origin when clicked — so only http(s)
+// URLs are ever turned into a link.
+function httpUrlOrNull(u) {
+  const s = String(u ?? '');
+  return /^https?:\/\//i.test(s) ? s : null;
+}
+
 function card(item) {
   const urgency = item.urgency && ['P0','P1','P2','P3'].includes(item.urgency) ? item.urgency : null;
   const badge = urgency
@@ -151,6 +180,12 @@ function card(item) {
   const lm = item.last_message;
   const author = lm && lm.author_name ? lm.author_name : 'unknown';
   const statusCls = item.status === 'seen' ? 'seen' : item.status === 'done' ? 'done' : '';
+  const permalink = httpUrlOrNull(item.permalink);
+  const linkHtml = permalink
+    ? '<a href="' + esc(permalink) + '" target="_blank" rel="noopener noreferrer">Open in Slack</a>'
+    : (item.permalink
+        ? '<span class="nolink" title="link hidden: not an http(s) URL">Open in Slack</span>'
+        : '');
 
   let buttons = '';
   if (item.status === 'new') {
@@ -174,7 +209,7 @@ function card(item) {
       '<span class="text">' + esc(snippet(lm ? lm.text : '')) + '</span></div>' +
     (item.why ? '<div class="why">' + esc(item.why) + '</div>' : '') +
     '<div class="actions">' +
-      (item.permalink ? '<a href="' + esc(item.permalink) + '" target="_blank" rel="noopener">Open in Slack</a>' : '') +
+      linkHtml +
       buttons +
       '<span class="status-label">' + esc(item.status) + '</span>' +
     '</div>' +
@@ -183,7 +218,8 @@ function card(item) {
 
 async function refresh() {
   try {
-    const res = await fetch('/api/feed');
+    const res = await apiFetch('/api/feed');
+    if (res.status === 401) { handleAuthFailure(); throw new Error('HTTP 401'); }
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const items = await res.json();
     if (!Array.isArray(items) || items.length === 0) {
@@ -202,11 +238,12 @@ feedEl.addEventListener('click', async (e) => {
   if (!btn) return;
   btn.disabled = true;
   try {
-    await fetch('/api/thread/' + btn.dataset.id + '/status', {
+    const res = await apiFetch('/api/thread/' + btn.dataset.id + '/status', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: btn.dataset.status }),
     });
+    if (res.status === 401) handleAuthFailure();
   } catch (err) { /* next refresh will correct the view */ }
   refresh();
 });
