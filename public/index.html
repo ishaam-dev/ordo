@@ -1001,7 +1001,7 @@ function markDoneAndAdvance(id) {
 function openInSlack(id) {
   const it = itemById(id);
   const url = it && httpUrlOrNull(it.permalink);
-  if (!url) { flashStrip('No Slack permalink stored for this thread.'); return; }
+  if (!url) { flashStrip("This conversation has no link back to Slack — open it in Slack yourself."); return; }
   window.open(url, '_blank', 'noopener,noreferrer');
 }
 
@@ -1098,23 +1098,53 @@ function renderBanner() {
 
   main.appendChild(el('div', 'sbsub',
     'Then come back here — prioritizing starts again on its own within a few minutes, ' +
-    'or use Re-analyze on a message to retry it straight away.'));
+    'or use "Check this again" on a message to retry it straight away.'));
 
   bannerEl.replaceChildren(icon, main);
+}
+
+/** Plain-English state of one Slack workspace, from /api/status. */
+function wsHealth(h) {
+  if (!h || !h.registered || !h.state) return { cls: '', text: 'Still starting up…' };
+  const detail = h.message ? ' — ' + h.message : '';
+  if (h.state === 'connected') return { cls: 'ok', text: 'Connected' + detail };
+  if (h.state === 'connecting') return { cls: 'warn', text: h.message || 'Connecting to Slack…' };
+  if (h.state === 'reconnecting') {
+    return { cls: 'warn', text: h.message || 'Lost the connection to Slack — trying again.' };
+  }
+  return { cls: 'err', text: h.message || "Can't connect to Slack right now." };
 }
 
 function renderStatuses() {
   const ws = new Map();
   state.items.forEach((i) => { if (!ws.has(i.workspace)) ws.set(i.workspace, i.team_name || i.workspace); });
+  /* The feed only says which workspaces have sent us something; /api/status is the only
+     honest source for "is Slack actually connected?". Prefer it — it also lists a
+     configured workspace that has produced no messages yet — and fall back to the
+     feed-derived names until the first status answer arrives. */
+  const health = new Map();
+  const reported = state.status && state.status.workspaces;
+  if (Array.isArray(reported)) {
+    reported.forEach((w) => {
+      if (!w || !w.key) return;
+      health.set(w.key, w);
+      ws.set(w.key, w.teamName || ws.get(w.key) || w.key);
+    });
+  }
   const pending = state.items.filter((i) => !urgencyOf(i) && i.status !== 'done').length;
   statusesEl.replaceChildren();
   const chip = analyzerChip(pending);
   if (chip) statusesEl.appendChild(chip);
   ws.forEach((name, key) => {
     const s = el('span', 'st');
+    const h = health.get(key);
+    const hs = h ? wsHealth(h) : null;
+    // No dot at all when the server has not reported yet: an uncoloured dot would read as
+    // a bug, and a green one would be a claim we cannot back up.
+    if (hs && hs.cls) s.appendChild(el('i', hs.cls));
     s.appendChild(wsBadge({ workspace: key, team_name: name }));
     s.appendChild(el('span', null, name));
-    s.title = 'workspace ' + key + ' — ' + name;
+    s.title = name + (hs ? ' — ' + hs.text : '');
     statusesEl.appendChild(s);
   });
   const ok = !state.feedError;
@@ -1282,7 +1312,7 @@ function paintCard(c, it, u, stale) {
   });
   hb.appendChild(done);
   const slack = el('button', 'hbtn', '↗');
-  slack.title = httpUrlOrNull(it.permalink) ? 'open in Slack (s)' : 'no permalink stored';
+  slack.title = httpUrlOrNull(it.permalink) ? 'open in Slack (s)' : 'no link back to Slack';
   slack.addEventListener('click', (e) => { e.stopPropagation(); openInSlack(it.id); });
   hb.appendChild(slack);
   r1.appendChild(hb);
@@ -1445,7 +1475,7 @@ function threadHeader(it, d) {
   slack.appendChild(document.createTextNode('Open in Slack'));
   slack.appendChild(el('span', 'key', 's'));
   slack.disabled = !httpUrlOrNull(it.permalink);
-  if (slack.disabled) slack.title = 'no permalink stored for this thread';
+  if (slack.disabled) slack.title = 'this conversation has no link back to Slack';
   slack.addEventListener('click', () => openInSlack(it.id));
   act.appendChild(slack);
 
@@ -1467,7 +1497,7 @@ function threadHeader(it, d) {
     const unseen = el('button', null, 'Mark unseen (u)');
     unseen.addEventListener('click', () => { setStatus(it.id, 'new'); menu.remove(); });
     menu.appendChild(unseen);
-    const re = el('button', null, reanalyzeLabel(it.id, 'Re-analyze'));
+    const re = el('button', null, reanalyzeLabel(it.id, 'Check this again'));
     const busy = !!state.reanalyze.get(it.id);
     re.disabled = busy;
     re.title = busy
@@ -1623,7 +1653,7 @@ function analysisCard(it, d, a) {
   if (stale) {
     const n = staleCount(it);
     card.appendChild(el('div', 'stalebanner',
-      '⚠ ' + (n ? n + (n === 1 ? ' reply' : ' replies') : 'New replies') + ' since this analysis — re-analyzing…'));
+      '⚠ ' + (n ? n + (n === 1 ? ' new reply' : ' new replies') : 'New replies') + ' since Claude last read this — checking it again…'));
   }
 
   const body = el('div', 'abody');
@@ -1672,8 +1702,8 @@ function analysisCard(it, d, a) {
 
   const meta = el('div', 'ameta');
   const ago = agoFromIso(a.analyzed_at);
-  meta.appendChild(el('span', null, 'analyzed ' + (ago || 'at an unknown time')));
-  if (a.covered_through_ts) meta.appendChild(el('span', null, '· covered through ' + clockTime(a.covered_through_ts)));
+  meta.appendChild(el('span', null, 'Claude read this ' + (ago || 'at an unknown time')));
+  if (a.covered_through_ts) meta.appendChild(el('span', null, '· up to the ' + clockTime(a.covered_through_ts) + ' message'));
   meta.appendChild(reanalyzeControl(it.id));
   card.appendChild(meta);
   return card;
@@ -1683,7 +1713,7 @@ function analysisCard(it, d, a) {
 function reanalyzeControl(id) {
   const st = state.reanalyze.get(id);
   if (st) return el('span', 'muted-link', '· ' + (st === 'busy' ? 'asking Claude…' : 'queued ✓'));
-  const re = el('button', 'metabtn', '· re-analyze');
+  const re = el('button', 'metabtn', '· check this again');
   re.title = 'ask Claude to look at this message again now';
   re.addEventListener('click', (e) => { e.stopPropagation(); reanalyze(id); });
   return re;
@@ -1952,5 +1982,12 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) { lo
 // relative timestamps drift; repaint the feed once a minute even without new data
 setInterval(() => { cardEls.forEach((c) => { c.dataset.sig = ''; }); renderFeed(); }, 60000);
 </script>
+
+<!-- Chat panel. public/chat.js owns the #chat pane and replaces the inert
+     openChat / closeChat / renderChat defined above with the real, streaming
+     implementation (server: src/chat.ts). Loaded last, deferred, so every call
+     site here keeps working unchanged. -->
+<link rel="stylesheet" href="/chat.css">
+<script src="/chat.js" defer></script>
 </body>
 </html>

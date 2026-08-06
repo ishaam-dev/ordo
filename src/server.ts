@@ -12,6 +12,7 @@ import {
   setThreadStatus,
 } from './db.js';
 import { requestReanalysis } from './analyzer.js';
+import { registerChatRoutes } from './chat.js';
 import { analyzerHealth, listWorkspaceHealth } from './health.js';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -226,6 +227,23 @@ export function startServer(port: number): Promise<void> {
       res.status(500).json({ error: 'internal error' });
     }
   });
+
+  /*
+   * Chat + the send path (src/chat.ts):
+   *   GET  /api/thread/:id/chat    prior chat messages
+   *   POST /api/thread/:id/chat    one chat turn, streamed back as SSE
+   *   POST /api/thread/:id/reply   post {text} to Slack as the user
+   *
+   * Mounted here, under /api and after the two middlewares above, so they inherit the
+   * Host allowlist and the per-run token exactly like every other route. Streaming is
+   * SSE on this same authenticated request rather than a WebSocket — a WS handshake
+   * cannot carry the token header and bypasses CORS entirely, so it would have needed
+   * its own Origin/Host/token checks to be equally safe.
+   *
+   * Posting to Slack is deliberately NOT reachable by the model: it is a separate
+   * endpoint whose body carries the text the user just saw, fired by a button click.
+   */
+  registerChatRoutes(app);
 
   // index: false so a bare '/' can never fall through to the un-injected file on disk.
   app.use(express.static(publicDir, { index: false }));

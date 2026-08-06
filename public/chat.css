@@ -1,0 +1,99 @@
+/* =========================================================================
+   Chat panel styles — owned by public/chat.js (see src/chat.ts for the API).
+   Kept out of index.html so the feed/thread UI and this file can be edited
+   independently. Uses the palette variables already defined in index.html
+   (docs/ux.md §2); nothing here re-declares them.
+   ========================================================================= */
+
+/* ---- message list ---- */
+.cmsg { display: flex; flex-direction: column; gap: 4px; max-width: 100%; }
+.cmsg .cwho {
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--text-3);
+}
+.cmsg .cbubble {
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+  font-size: 12.5px; line-height: 1.5; color: var(--text); overflow-wrap: anywhere;
+}
+.cmsg.user { align-items: flex-end; }
+.cmsg.user .cbubble { background: var(--surface-2); border-color: var(--surface-2); }
+.cmsg.assistant .cbubble { background: var(--bg); }
+.cmsg .cbubble p { margin: 0 0 6px; }
+.cmsg .cbubble p:last-child { margin-bottom: 0; }
+.cmsg .cbubble pre {
+  font-family: var(--mono); font-size: 11px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px;
+  margin: 6px 0; white-space: pre-wrap; overflow-x: auto;
+}
+.cmsg .cbubble a { color: var(--accent); }
+.ccursor { display: inline-block; width: 6px; color: var(--accent); animation: cblink 1s steps(2) infinite; }
+@keyframes cblink { 50% { opacity: 0; } }
+
+/* ---- tool rows ---- */
+.ctool {
+  display: flex; align-items: center; gap: 6px; font-family: var(--mono);
+  font-size: 10px; color: var(--text-3); border: 1px solid var(--border);
+  border-radius: 6px; padding: 3px 8px; align-self: flex-start;
+}
+.ctool.ok { color: var(--text-2); }
+.ctool.bad { color: var(--warn); border-color: var(--warn); }
+
+/* ---- draft-reply card: the only send path ---- */
+.draftcard {
+  border: 1px solid var(--ok); border-radius: 8px; background: rgba(63, 185, 80, .05);
+  padding: 9px 10px; display: flex; flex-direction: column; gap: 7px;
+}
+.draftcard.done { border-color: var(--border); background: none; }
+.draftcard .dhead {
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: .05em;
+  text-transform: uppercase; color: var(--ok);
+}
+.draftcard.done .dhead { color: var(--text-3); }
+.draftcard .dhead b { color: var(--text); font-weight: 700; }
+.draftcard textarea {
+  width: 100%; min-height: 76px; background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px;
+  font: 12.5px/1.5 var(--sans); resize: vertical; outline: none;
+}
+.draftcard textarea:focus { border-color: var(--ok); }
+.draftcard .drow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.dsend {
+  background: var(--ok); border: none; color: #0d1117; font-weight: 700; font-size: 12px;
+  border-radius: 6px; padding: 5px 11px; font-family: inherit; cursor: pointer;
+}
+.dsend:disabled { opacity: .45; cursor: not-allowed; }
+.dbtn {
+  background: none; border: 1px solid var(--border); color: var(--text-2);
+  font-size: 11px; border-radius: 6px; padding: 4px 9px; font-family: inherit; cursor: pointer;
+}
+.dbtn:hover { color: var(--text); border-color: var(--text-3); }
+.dnote { font-size: 10px; color: var(--text-3); line-height: 1.45; }
+.dnote b { color: var(--text-2); font-weight: 600; }
+.derr { font-size: 11px; color: var(--p0); overflow-wrap: anywhere; }
+.dsent { font-size: 11.5px; color: var(--ok); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.dsent a { color: var(--accent); }
+
+/* ---- errors / banners ---- */
+.cbanner {
+  border: 1px solid var(--p0); background: rgba(248, 81, 73, .07); border-radius: 8px;
+  padding: 8px 10px; font-size: 12px; color: var(--text); display: flex;
+  flex-direction: column; gap: 5px;
+}
+.cbanner .bmsg { font-weight: 600; }
+.cbanner .bhint { font-size: 11.5px; color: var(--text-2); }
+.cbanner code {
+  font-family: var(--mono); font-size: 11px; background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; color: var(--text);
+}
+.cbanner .brow { display: flex; gap: 6px; align-items: center; }
+
+/* ---- composer extras ---- */
+.cstop {
+  background: none; border: 1px solid var(--border); color: var(--text-2);
+  font-size: 11px; border-radius: 6px; padding: 4px 9px; font-family: inherit; cursor: pointer;
+}
+.cstop:hover { color: var(--text); border-color: var(--text-3); }
+.sess i.live { background: var(--ok); }
+.sess i.err { background: var(--p0); }
+.cempty { color: var(--text-3); font-size: 12px; line-height: 1.6; }
+.cempty b { color: var(--text-2); }
