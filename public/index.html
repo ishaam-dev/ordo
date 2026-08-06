@@ -105,6 +105,17 @@
   }
 
   /* ================= feed ================= */
+  /* sort control: worded segments, never icon-only — this row has to be readable
+     by someone who has never seen the app before. */
+  .feedhead{flex:none;display:flex;align-items:center;gap:8px;padding:6px 10px;
+    border-bottom:1px solid var(--border);background:var(--bg)}
+  .feedhead .sortlab{font-size:11px;color:var(--text-3);user-select:none;flex:none}
+  .seg{display:flex;border:1px solid var(--border);border-radius:6px;overflow:hidden}
+  .segbtn{padding:3px 9px;font-family:inherit;font-size:12px;line-height:1.5;color:var(--text-2);
+    background:none;border:none;border-left:1px solid var(--border);cursor:pointer;white-space:nowrap}
+  .segbtn:first-child{border-left:none}
+  .segbtn:hover{color:var(--text);background:var(--surface)}
+  .segbtn.active{background:var(--surface-2);color:var(--text);font-weight:600}
   .feedlist{flex:1;overflow-y:auto;padding:6px}
   .group-label{
     font-size:10px;font-weight:700;letter-spacing:.08em;color:var(--text-3);
@@ -340,6 +351,17 @@
 
   <div class="main">
     <div class="pane feed">
+      <div class="feedhead">
+        <span class="sortlab">Sort</span>
+        <div class="seg" id="sortseg" role="group" aria-label="Sort the list (shift+S cycles)">
+          <button class="segbtn active" data-sort="priority" aria-pressed="true"
+            title="Most urgent first: P0, then P1, P2, P3 — newest first inside each level. Threads Claude has not rated yet stay pinned on top.">Priority</button>
+          <button class="segbtn" data-sort="newest" aria-pressed="false"
+            title="Newest activity first, ignoring urgency. One flat list.">Newest</button>
+          <button class="segbtn" data-sort="oldest" aria-pressed="false"
+            title="Oldest activity first, ignoring urgency. One flat list.">Oldest</button>
+        </div>
+      </div>
       <div class="feedlist" id="feedlist"></div>
       <div class="feedfoot"><b>j/k</b> move · <b>enter</b> open · <b>e</b> done · <b>u</b> unseen · <b>c</b> chat · <b>s</b> slack · <b>?</b> help</div>
     </div>
@@ -696,12 +718,29 @@ const POLL_MS = 5000;
 const MAX_HYDRATE = 10;
 const RANK = { P0: 0, P1: 1, P2: 2, P3: 3 };
 
+/* --------------------------- feed sort preference -------------------------- */
+/* Purely a display choice: sorting happens here, over the rows /api/feed already
+   returned. The API and the server-side ordering are untouched. */
+const SORT_KEY = 'copilot-feed-sort';
+const SORT_MODES = ['priority', 'newest', 'oldest'];
+
+/** Remembered across reloads and app restarts. Storage can throw (private mode,
+ *  storage disabled), and a bad/absent value must never break the feed — both
+ *  fall back to the default order. */
+function loadSortMode() {
+  try {
+    const v = localStorage.getItem(SORT_KEY);
+    return SORT_MODES.indexOf(v) >= 0 ? v : 'priority';
+  } catch (_) { return 'priority'; }
+}
+
 const state = {
   items: [],
   loaded: false,
   feedError: null,
   lastOk: null,
   tab: 'inbox',
+  sort: loadSortMode(),    // priority | newest | oldest  (display order only)
   cursor: null,
   focusPane: 'feed',       // feed | thread | chat
   chatOpen: false,
@@ -725,6 +764,7 @@ const stripEl = document.getElementById('strip');
 const bannerEl = document.getElementById('setupbanner');
 const statusesEl = document.getElementById('statuses');
 const overlayEl = document.getElementById('overlay');
+const sortSegEl = document.getElementById('sortseg');
 const cardEls = new Map();
 
 /* ------------------------- analyzer health helpers ------------------------ */
@@ -786,17 +826,73 @@ function staleCount(it) {
   return c.detail.messages.filter((m) => parseFloat(m.ts) > parseFloat(a.covered_through_ts) + 0.0001).length;
 }
 
+/** The feed's display order. Tab filtering always happens first, so every sort
+ *  mode composes with Inbox / Done / All.
+ *
+ *  priority (default, docs/ux.md §3) — not-yet-rated threads pinned on top as
+ *    their own group, then P0→P1→P2→P3 with newest first inside each band.
+ *  newest / oldest — pure `last_activity` order. Urgency stops being a sort key
+ *    here, so the groups are suppressed: a chronological list chopped into
+ *    urgency bands would describe an order the list does not have, and pinning
+ *    the unrated group on top would break the chronology outright. One flat
+ *    list; the chip and the coloured edge stay on every card.
+ *
+ *  `grouped` tells renderFeed which of the two shapes it got. */
 function visibleItems() {
   const list = state.items.filter((i) =>
     state.tab === 'inbox' ? i.status !== 'done' : state.tab === 'done' ? i.status === 'done' : true);
-  const byAct = (a, b) => parseFloat(b.last_activity || 0) - parseFloat(a.last_activity || 0);
+  const act = (i) => parseFloat(i.last_activity || 0) || 0;
+  const byAct = (a, b) => act(b) - act(a);
+
+  if (state.sort === 'newest' || state.sort === 'oldest') {
+    const flat = list.sort(state.sort === 'newest' ? byAct : (a, b) => act(a) - act(b));
+    return { pending: [], ranked: flat, flat: flat, grouped: false };
+  }
+
   const pending = list.filter((i) => !urgencyOf(i) && i.status !== 'done').sort(byAct);
   const ranked = list.filter((i) => !(!urgencyOf(i) && i.status !== 'done')).sort((a, b) => {
     const ra = RANK[a.urgency] !== undefined ? RANK[a.urgency] : 4;
     const rb = RANK[b.urgency] !== undefined ? RANK[b.urgency] : 4;
     return ra !== rb ? ra - rb : byAct(a, b);
   });
-  return { pending, ranked, flat: pending.concat(ranked) };
+  return { pending, ranked, flat: pending.concat(ranked), grouped: true };
+}
+
+/** Header above the ranked list. In the chronological modes it also names the
+ *  order, so the list explains itself without a look back up at the control. */
+function feedGroupLabel() {
+  const tab = state.tab === 'done' ? 'Done' : state.tab === 'all' ? 'All threads' : 'Inbox';
+  if (state.sort === 'newest') return tab + ' · newest first';
+  if (state.sort === 'oldest') return tab + ' · oldest first';
+  return tab;
+}
+
+function paintSortControl() {
+  if (!sortSegEl) return;
+  sortSegEl.querySelectorAll('.segbtn').forEach((b) => {
+    const on = b.dataset.sort === state.sort;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+}
+
+/** Change the display order. The cursor is keyed by thread id (never by index),
+ *  so the same conversation stays selected across the re-sort and is scrolled
+ *  back into view — re-sorting must never hand the cursor to whatever floated
+ *  to the top. */
+function setSort(mode) {
+  if (SORT_MODES.indexOf(mode) < 0 || state.sort === mode) return;
+  state.sort = mode;
+  try { localStorage.setItem(SORT_KEY, mode); } catch (_) { /* preference just won't stick */ }
+  paintSortControl();
+  renderFeed();
+  ensureCursor();        // no-op unless the cursored thread is gone (same filter, so it isn't)
+  scrollCursorIntoView();
+  hydrate();             // the bounded stale-marker window now covers a different set of rows
+}
+
+function cycleSort() {
+  setSort(SORT_MODES[(SORT_MODES.indexOf(state.sort) + 1) % SORT_MODES.length]);
 }
 
 /* =============================== data flow =============================== */
@@ -1350,7 +1446,7 @@ function renderFeed() {
     }
     return;
   }
-  const { pending, ranked, flat } = visibleItems();
+  const { pending, ranked, flat, grouped } = visibleItems();
   if (!flat.length) {
     const names = Array.from(new Set(state.items.map((i) => i.team_name).filter(Boolean)));
     const p = el('div', 'placeholder');
@@ -1366,7 +1462,8 @@ function renderFeed() {
   const topBefore = selBefore && selBefore.isConnected ? selBefore.getBoundingClientRect().top : null;
 
   const frag = document.createDocumentFragment();
-  if (pending.length) {
+  // Grouping is a priority-mode affordance only; see visibleItems().
+  if (grouped && pending.length) {
     const g = el('div', 'group-label');
     if (analyzerStalled()) {
       g.appendChild(el('span', null, 'Waiting to be prioritized · ' + pending.length));
@@ -1380,8 +1477,7 @@ function renderFeed() {
     pending.forEach((it) => frag.appendChild(cardFor(it)));
   }
   if (ranked.length) {
-    frag.appendChild(el('div', 'group-label',
-      state.tab === 'done' ? 'Done' : state.tab === 'all' ? 'All threads' : 'Inbox'));
+    frag.appendChild(el('div', 'group-label', feedGroupLabel()));
     ranked.forEach((it) => frag.appendChild(cardFor(it)));
   }
   feedListEl.replaceChildren(frag);
@@ -1879,6 +1975,7 @@ const SHORTCUTS = [
   ['u', 'Mark unseen'],
   ['c', 'Open the Claude chat panel (marks seen)'],
   ['s', 'Open the thread in Slack (never changes status)'],
+  ['shift + S', 'Change the order: Priority → Newest → Oldest (same as the buttons above the list)'],
   ['esc', 'Close chat → focus thread → focus feed'],
   ['1 / 2 / 3', 'Inbox / Done / All'],
   ['?', 'This overlay'],
@@ -1937,6 +2034,9 @@ document.addEventListener('keydown', (e) => {
     case 'u': if (state.cursor != null) { setStatus(state.cursor, 'new'); e.preventDefault(); } break;
     case 'c': if (state.cursor != null) { openChat(state.cursor, ''); e.preventDefault(); } break;
     case 's': if (state.cursor != null) { openInSlack(state.cursor); e.preventDefault(); } break;
+    // shift+S cycles the order. Distinct from 's' (open in Slack) because the
+    // switch matches e.key, and no other binding uses a capital letter.
+    case 'S': cycleSort(); e.preventDefault(); break;
     case 'Escape':
       if (state.chatOpen) closeChat();
       else if (state.focusPane === 'thread') { state.focusPane = 'feed'; document.activeElement && document.activeElement.blur(); }
@@ -1962,12 +2062,17 @@ document.getElementById('tabs').addEventListener('click', (e) => {
   const t = e.target.closest('.tab');
   if (t) switchTab(t.dataset.tab);
 });
+sortSegEl.addEventListener('click', (e) => {
+  const b = e.target.closest('.segbtn');
+  if (b) setSort(b.dataset.sort);
+});
 
 /* -------------------------------- boot ----------------------------------- */
 
 const hashMatch = /^#\/t\/(\d+)$/.exec(location.hash);
 if (hashMatch) state.cursor = Number(hashMatch[1]);
 
+paintSortControl();      // state.sort came from localStorage; the markup's default may be stale
 renderFeed();
 renderThread();
 renderTitleBadge();
