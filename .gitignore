@@ -1,8 +1,19 @@
+# Secrets — .env holds real Slack user tokens.
+# Broad match so editor swap/backup files (.env.swp, .env~, .env.bak) can never be committed.
 .env
+.env.*
+*.swp
+*.swo
+*~
+!.env.example
+
 node_modules/
 dist/
-*.db
-*.db-journal
-*.db-wal
-*.db-shm
+
+# Runtime state
+data.db
+data.db-journal
+data.db-wal
+data.db-shm
+
 .DS_Store
