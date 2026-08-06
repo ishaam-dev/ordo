@@ -159,6 +159,19 @@ function getChatSession(threadId: number): ChatSessionRow | null {
   return (stmtGetSession.get(threadId) as ChatSessionRow | undefined) ?? null;
 }
 
+/**
+ * The Claude session id this thread's chat is currently using, or null before the
+ * first turn has produced one.
+ *
+ * `chat_sessions` is this module's table — src/db.ts does not know it exists — so the
+ * "Continue in Claude Code" route in src/server.ts reads it through here instead of
+ * opening a third connection to the same file. Nothing is validated here on purpose:
+ * this returns whatever is stored, and the caller decides what a usable id looks like.
+ */
+export function chatSessionIdFor(threadId: number): string | null {
+  return getChatSession(threadId)?.session_id ?? null;
+}
+
 function saveChatSession(threadId: number, sessionId: string | null, coveredTs: string | null): void {
   const now = new Date().toISOString();
   stmtPutSession.run(threadId, sessionId, coveredTs, now, now);

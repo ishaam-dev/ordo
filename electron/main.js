@@ -25,6 +25,8 @@ const {
   session,
   shell,
 } = require('electron');
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 // Set before anything asks for a path, so settings and logs land in the same place
@@ -37,11 +39,55 @@ const { FeedWatcher } = require('./watcher');
 
 // Icons live next to main.js in the built app (scripts/prepare-app.mjs copies them
 // there); when running from source straight out of the repo they are one level up.
-const ASSETS = require('node:fs').existsSync(path.join(__dirname, 'assets'))
+const ASSETS = fs.existsSync(path.join(__dirname, 'assets'))
   ? path.join(__dirname, 'assets')
   : path.join(__dirname, '..', 'assets');
 
 const STARTING_PAGE = path.join(__dirname, 'starting.html');
+
+/* ------------------------------------------- "Continue in Claude Code" ---- */
+
+/**
+ * Which terminal app this Mac actually has. iTerm wins when it is installed —
+ * someone who uses iTerm has usually never opened Terminal.app on purpose.
+ * Terminal.app is on every Mac, so it is the answer when nothing else matches.
+ */
+function installedTerminal() {
+  const iterm = [
+    '/Applications/iTerm.app',
+    '/Applications/iTerm2.app',
+    path.join(os.homedir(), 'Applications', 'iTerm.app'),
+  ];
+  for (const dir of iterm) {
+    try {
+      if (fs.existsSync(dir)) return 'iTerm';
+    } catch {
+      /* unreadable is the same as absent */
+    }
+  }
+  return 'Terminal';
+}
+
+/**
+ * The server can open a terminal window on a Claude session ("Continue in Claude
+ * Code" in the UI) — but only when it is *our* server, started by this app.
+ *
+ * That permission is granted here, and it is granted the only way the server can
+ * check honestly: through the environment. electron/supervisor.js spawns the server
+ * with a copy of this process's env, so setting these two variables before it starts
+ * is what makes src/server.ts's `canLaunch` true. A server the user started in a
+ * shell, or one this app merely attached to, never sees them and answers false — and
+ * the page falls back to showing the command with a Copy button. Failing closed is
+ * the point: the alternative is a button that silently does nothing.
+ *
+ * COPILOT_TERMINAL_APP is only ever 'iTerm' or 'Terminal', and the server treats it
+ * as a choice between two fixed scripts rather than as text to paste into one.
+ */
+function grantTerminalLaunch() {
+  process.env.COPILOT_CAN_LAUNCH_TERMINAL = '1';
+  process.env.COPILOT_TERMINAL_APP = installedTerminal();
+  log(`"Continue in Claude Code" will open ${process.env.COPILOT_TERMINAL_APP}`);
+}
 
 /* ------------------------------------------------- command-line helpers ---- */
 // Handled before anything else so the uninstaller works even while the app runs.
@@ -545,6 +591,10 @@ function main() {
     log(`--- Slack Copilot starting (packaged: ${app.isPackaged}) ---`);
     log(`project folder: ${cfg.projectDir || 'NOT FOUND'}`);
     log(`window address: ${baseUrl()}`);
+
+    // Must happen before supervisor.start(): the server inherits this process's
+    // environment when it is spawned, and that inheritance IS the permission.
+    grantTerminalLaunch();
 
     // The page is served from our own machine, but it renders text written by other
     // people in Slack — so it gets no privileges of any kind.

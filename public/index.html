@@ -145,6 +145,36 @@
   .copybtn:hover{color:var(--text);border-color:var(--text-3)}
   .copybtn.done{color:var(--ok);border-color:var(--line-ok)}
 
+  /* "Continue in Claude Code" — the card in the thread pane and the matching strip
+     in the chat pane (public/chat.js reuses these classes). The fallback is built
+     from the same .cmdrow / .cmd / .copybtn parts as the setup banner above: it is
+     the same idea — "here is the command, copy it" — so it looks like the same
+     thing rather than something bolted on. */
+  .hocard{border:1px solid var(--border);border-radius:9px;background:var(--surface);
+    padding:11px 13px;margin:0 0 12px}
+  .hotitle{font-size:12.5px;font-weight:700;color:var(--text)}
+  .hosub{font-size:12px;color:var(--text-2);margin-top:3px;line-height:1.5}
+  .hoitem{margin-top:9px;padding-top:9px;border-top:1px solid var(--border)}
+  .hoitem.first{border-top:0;padding-top:0}
+  .holabel{font-size:12px;color:var(--text);font-weight:600;margin-bottom:4px}
+  .hobtn{border:1px solid var(--border);background:var(--bg);color:var(--text);
+    border-radius:6px;padding:4px 11px;font-size:12px;cursor:pointer;font-family:inherit}
+  .hobtn:hover:not(:disabled){border-color:var(--text-3)}
+  .hobtn:disabled{opacity:.6;cursor:default}
+  .howarn{font-size:11.5px;color:var(--warn);margin-top:4px;line-height:1.5}
+  .honote{font-size:11.5px;color:var(--text-2);margin-top:5px;line-height:1.5}
+  .honote.bad{color:var(--p0)}
+  .honote.good{color:var(--ok)}
+  /* A resume command is ~85 characters, so unlike the setup banner's short `claude
+     auth login` it has to wrap — otherwise it pushes a whole pane sideways. */
+  .hocard .cmd{white-space:pre-wrap;word-break:break-all}
+  .chat .hocard{margin:0;border:0;border-top:1px solid var(--border);border-radius:0;
+    background:var(--surface);padding:9px 12px}
+  .chat .hotoggle{display:flex;align-items:center;gap:6px;width:100%;background:none;
+    border:0;padding:0;color:var(--text-2);font-family:inherit;font-size:11.5px;
+    cursor:pointer;text-align:left}
+  .chat .hotoggle:hover{color:var(--text)}
+
   /* ================= 3-pane layout ================= */
   .main{flex:1;display:grid;grid-template-columns:380px minmax(480px,1fr) 400px;min-height:0;position:relative}
   body.chat-closed .main{grid-template-columns:380px minmax(480px,1fr) 0}
@@ -817,6 +847,7 @@ const state = {
   status: null,            // last /api/status payload (analyzer + server + workspaces)
   statusError: null,
   reanalyze: new Map(),    // thread id -> 'busy' | 'queued' (transient UI state)
+  handoff: new Map(),      // thread id -> "Continue in Claude Code" state (see loadHandoff)
 };
 
 const feedListEl = document.getElementById('feedlist');
@@ -1100,6 +1131,9 @@ function setCursor(id, opts) {
 }
 
 async function loadDetail(id) {
+  // Which Claude sessions this thread can hand over to. Cheap, independent of the
+  // transcript, and never allowed to fail the thread load.
+  if (!handoffState(id).loaded) void loadHandoff(id);
   const it = itemById(id);
   const key = id + ':' + (it ? it.last_activity : '');
   const c = state.cache.get(id);
@@ -1122,6 +1156,104 @@ async function loadDetail(id) {
   state.detailLoading = false;
   renderThread();
   renderFeed();
+}
+
+/* ---------------------- continue in Claude Code -------------------------- */
+/* Two Claude sessions exist per thread and they behave differently, so they are
+   offered as two differently-labelled things. The server hands us the exact
+   command for each; we either ask it to open a terminal (Mac app) or show the
+   command with a Copy button (browser, or a launch that did not work out). */
+
+function handoffState(id) {
+  let h = state.handoff.get(id);
+  if (!h) {
+    h = {
+      loaded: false, loading: false,
+      canLaunch: false, chat: null, analysis: null,
+      busy: null,        // 'chat' | 'analysis' while a launch is in flight
+      shown: {},         // target -> true once its command row is revealed
+      note: null,        // { text, tone } under the buttons
+    };
+    state.handoff.set(id, h);
+  }
+  return h;
+}
+
+/** Compact signature so renderThread only rebuilds the card when it really changed. */
+function handoffSig(id) {
+  const h = state.handoff.get(id);
+  if (!h) return null;
+  return [h.loaded, h.canLaunch, h.chat && h.chat.sessionId, h.analysis && h.analysis.sessionId,
+    h.busy, !!h.shown.chat, !!h.shown.analysis,
+    h.note && h.note.target, h.note && h.note.text].join('|');
+}
+
+async function loadHandoff(id) {
+  const h = handoffState(id);
+  if (h.loading) return;
+  h.loading = true;
+  try {
+    const d = await api('/api/thread/' + id + '/handoff');
+    h.chat = d && d.chat ? d.chat : null;
+    h.analysis = d && d.analysis ? d.analysis : null;
+    h.canLaunch = !!(d && d.canLaunch);
+    h.loaded = true;
+  } catch (_) {
+    // An older server without the route, or a blip. No card, no noise — the rest of
+    // the thread is unaffected.
+    h.loaded = true;
+    h.chat = null;
+    h.analysis = null;
+  }
+  h.loading = false;
+  if (state.cursor === id) { renderThread(); renderChat(); }
+}
+window.loadHandoff = loadHandoff;
+
+async function openInClaudeCode(id, target) {
+  const h = handoffState(id);
+  const slot = h[target];
+  if (!slot || h.busy) return;
+  if (!h.canLaunch) { h.shown[target] = true; renderThread(); return; }
+  h.busy = target;
+  h.note = null;
+  renderThread();
+  try {
+    // Not api(): every refusal here carries a sentence written for a person, and
+    // api() would throw it away and say "HTTP 503".
+    const res = await apiFetch('/api/thread/' + id + '/handoff', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target: target }),
+    });
+    if (res.status === 401) { handleAuthFailure(); throw new Error('unauthorized'); }
+    let out = null;
+    try { out = await res.json(); } catch (_) { out = null; }
+    if (!res.ok) throw new Error((out && (out.message || out.error)) || 'HTTP ' + res.status);
+    h.note = { target: target, tone: 'good',
+      text: 'Opened ' + ((out && out.terminal) || 'Terminal') + ' — Claude is picking up where it left off.' };
+  } catch (err) {
+    // Never a dead end: fall back to the command the user can run themselves.
+    h.shown[target] = true;
+    h.note = { target: target, tone: 'bad',
+      text: (err && err.message ? err.message : 'Could not open a terminal.') + ' Run this yourself instead:' };
+  }
+  h.busy = null;
+  renderThread();
+}
+
+/** A `.cmdrow` identical to the setup banner's: click-to-select command + Copy. */
+function commandRow(cmd) {
+  const row = el('div', 'cmdrow');
+  row.appendChild(el('span', 'lead', 'Open Terminal and run:'));
+  const cmdNode = el('code', 'cmd', cmd);
+  cmdNode.title = 'click to select, then copy';
+  row.appendChild(cmdNode);
+  const copy = el('button', 'copybtn', 'Copy');
+  copy.title = 'copy this command';
+  copy.addEventListener('click', () => copyCommand(cmd, copy, cmdNode));
+  row.appendChild(copy);
+  return row;
 }
 
 async function setStatus(id, status) {
@@ -1599,7 +1731,7 @@ function renderThread() {
     d ? d.messages.length : -1, d && d.messages.length ? d.messages[d.messages.length - 1].ts : null,
     a && [a.urgency, a.why, a.summary, a.suggested_action, a.context_notes, a.covered_through_ts, a.analyzed_at],
     state.detailLoading, state.detailError, collapsedSet().has(it.id), Math.floor(Date.now() / 60000),
-    analyzerSig(), state.reanalyze.get(it.id) || null]);
+    analyzerSig(), state.reanalyze.get(it.id) || null, handoffSig(it.id)]);
   if (threadEl.dataset.sig === sig) return;
   threadEl.dataset.sig = sig;
 
@@ -1687,6 +1819,8 @@ function threadScroll(it, d, a, names) {
   const body = el('div', 'tbody');
 
   body.appendChild(analysisCard(it, d, a));
+  const handoff = handoffCard(it);
+  if (handoff) body.appendChild(handoff);
 
   if (!d) {
     body.appendChild(el('div', 'placeholder',
@@ -1750,6 +1884,59 @@ function threadScroll(it, d, a, names) {
 
   scroll.appendChild(body);
   return scroll;
+}
+
+/**
+ * "Continue in Claude Code" — nothing at all until the server says there is a
+ * session to continue, so the card never advertises a button that cannot work.
+ */
+function handoffCard(it) {
+  const h = state.handoff.get(it.id);
+  if (!h || !h.loaded) return null;
+  if (!h.chat && !h.analysis) return null;
+
+  const card = el('div', 'hocard');
+  card.appendChild(el('div', 'hotitle', 'Continue in Claude Code'));
+  card.appendChild(el('div', 'hosub',
+    'Pick this conversation back up in the terminal, where Claude can use its tools and ' +
+    'actually go and change things — not just draft a reply.'));
+
+  let first = true;
+  const item = (target, label, describe, warn) => {
+    const slot = h[target];
+    if (!slot) return;
+    const wrap = el('div', 'hoitem' + (first ? ' first' : ''));
+    first = false;
+    wrap.appendChild(el('div', 'holabel', label));
+    wrap.appendChild(el('div', 'hosub', describe));
+    if (warn) wrap.appendChild(el('div', 'howarn', warn));
+
+    if (h.canLaunch) {
+      const b = el('button', 'hobtn', h.busy === target ? 'Opening…' : 'Open in Claude Code');
+      b.disabled = !!h.busy;
+      b.addEventListener('click', () => openInClaudeCode(it.id, target));
+      const row = el('div', 'cmdrow');
+      row.appendChild(b);
+      wrap.appendChild(row);
+    }
+    // The outcome belongs to the button that produced it, and "…run this yourself"
+    // has to come BEFORE the command it introduces or it captions nothing.
+    const mine = h.note && h.note.target === target && h.busy === null;
+    const note = mine ? el('div', 'honote ' + h.note.tone, h.note.text) : null;
+    if (note && h.note.tone === 'bad') wrap.appendChild(note);
+    if (!h.canLaunch || h.shown[target]) wrap.appendChild(commandRow(slot.command));
+    if (note && h.note.tone === 'good') wrap.appendChild(note);
+    card.appendChild(wrap);
+  };
+
+  item('chat', 'Continue this chat',
+    'Reopens the side-panel conversation exactly where you left it.');
+  item('analysis', 'See why it was rated this way',
+    'Reopens the session that gave this message its urgency and summary.',
+    'Heads-up: that session was told to answer only with a rating, so its first reply will ' +
+    'look like raw data. Ask it to talk normally and it will.');
+
+  return card;
 }
 
 function initials(name) {

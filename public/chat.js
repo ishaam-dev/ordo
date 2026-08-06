@@ -139,6 +139,12 @@
         streamRaw: '',
         abort: null,
         failure: null, // last turn failure {kind,message,hint,detail}
+        // "Continue in Claude Code" — see paintHandoff. Collapsed until asked for.
+        handoff: {
+          loaded: false, loading: false, canLaunch: false,
+          chat: null, analysis: null,
+          open: false, busy: null, shown: {}, note: null,
+        },
       };
       convos.set(id, c);
     }
@@ -211,13 +217,20 @@
     row.appendChild(el('span', 'chint', 'enter to send · shift+enter newline'));
     comp.appendChild(row);
 
-    chatEl.replaceChildren(head, body, comp);
+    // "Continue in Claude Code" lives between the transcript and the composer: it is
+    // an exit from this panel, not part of the conversation, and it must not push the
+    // composer off screen — so it is one collapsed line until someone wants it.
+    const ho = el('div', 'hocard');
+    ho.style.display = 'none';
+
+    chatEl.replaceChildren(head, body, ho, comp);
     panel = {
       threadId: id,
       who: who,
       dot: dot,
       sessText: sessText,
       body: body,
+      ho: ho,
       ta: ta,
       send: send,
       stop: stop,
@@ -228,6 +241,8 @@
 
     renderHistory(c);
     syncHead();
+    paintHandoff(c);
+    if (!c.handoff.loaded) void loadHandoff(c);
     // Always re-read from the server on open: the durable transcript lives there, so a
     // send, an app restart or a second window are all reflected. Skipped mid-turn, which
     // is the one moment the in-memory view is ahead of the database.
@@ -619,6 +634,166 @@
     });
   }
 
+  /* --------------------- continue in Claude Code ------------------------- */
+  /* The panel's exit hatch: hand one of this thread's two Claude sessions to the
+     real CLI, where Claude has tools and can go and DO the thing this panel
+     deliberately cannot. The two sessions behave differently, so they are two
+     separately-labelled entries — and the analysis one carries a warning, because
+     a session that answers with a rating looks broken if you were not told.
+
+     The Mac app can open a terminal itself; a browser cannot, so it shows the same
+     command with a Copy button (the classes come from index.html's setup banner,
+     so it is the same thing the user has already seen). A launch that fails falls
+     back to exactly that too — never a button that appears to do nothing. */
+
+  async function loadHandoff(c) {
+    const h = c.handoff;
+    if (h.loading) return;
+    h.loading = true;
+    try {
+      const d = await apiJson('/api/thread/' + c.id + '/handoff');
+      h.chat = d && d.chat ? d.chat : null;
+      h.analysis = d && d.analysis ? d.analysis : null;
+      h.canLaunch = !!(d && d.canLaunch);
+    } catch (_) {
+      // An older server without the route, or a blip: offer nothing rather than a
+      // broken button. The chat itself is unaffected.
+      h.chat = null;
+      h.analysis = null;
+    }
+    h.loaded = true;
+    h.loading = false;
+    if (panel && panel.threadId === c.id) paintHandoff(c);
+  }
+
+  async function openInClaudeCode(c, target) {
+    const h = c.handoff;
+    if (!h[target] || h.busy) return;
+    if (!h.canLaunch) {
+      h.shown[target] = true;
+      paintHandoff(c);
+      return;
+    }
+    h.busy = target;
+    h.note = null;
+    paintHandoff(c);
+    try {
+      const out = await apiJson('/api/thread/' + c.id + '/handoff', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target: target }),
+      });
+      h.note = {
+        target: target,
+        tone: 'good',
+        text: 'Opened ' + ((out && out.terminal) || 'Terminal') + ' — Claude is picking up where it left off.',
+      };
+    } catch (err) {
+      h.shown[target] = true;
+      h.note = {
+        target: target,
+        tone: 'bad',
+        text: String((err && err.message) || 'Could not open a terminal.') + ' Run this yourself instead:',
+      };
+    }
+    h.busy = null;
+    paintHandoff(c);
+  }
+
+  /** Same command row the setup banner uses, including its copy behaviour. */
+  function commandRow(cmd) {
+    const row = el('div', 'cmdrow');
+    row.appendChild(el('span', 'lead', 'Open Terminal and run:'));
+    const cmdNode = el('code', 'cmd', cmd);
+    cmdNode.title = 'click to select, then copy';
+    row.appendChild(cmdNode);
+    const copy = el('button', 'copybtn', 'Copy');
+    copy.title = 'copy this command';
+    copy.addEventListener('click', () => {
+      if (typeof window.copyCommand === 'function') {
+        window.copyCommand(cmd, copy, cmdNode);
+        return;
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(cmd).then(
+          () => {
+            copy.textContent = 'Copied';
+            copy.classList.add('done');
+          },
+          () => {
+            copy.textContent = 'Press ⌘C';
+          },
+        );
+      }
+    });
+    row.appendChild(copy);
+    return row;
+  }
+
+  function paintHandoff(c) {
+    if (!panel || panel.threadId !== c.id || !panel.ho) return;
+    const h = c.handoff;
+    const host = panel.ho;
+    host.replaceChildren();
+    if (!h.loaded || (!h.chat && !h.analysis)) {
+      host.style.display = 'none';
+      return;
+    }
+    host.style.display = '';
+
+    const toggle = el('button', 'hotoggle');
+    toggle.appendChild(el('span', null, h.open ? '▾' : '▸'));
+    toggle.appendChild(el('span', null, 'Continue in Claude Code'));
+    toggle.title = 'keep talking in the terminal, where Claude can use its tools';
+    toggle.addEventListener('click', () => {
+      h.open = !h.open;
+      paintHandoff(c);
+    });
+    host.appendChild(toggle);
+    if (!h.open) return;
+
+    host.appendChild(
+      el('div', 'hosub',
+        'Claude gets its tools back there — it can go and change things, not just draft a reply.'),
+    );
+
+    let first = true;
+    const item = (target, label, describe, warn) => {
+      if (!h[target]) return;
+      const wrap = el('div', 'hoitem' + (first ? ' first' : ''));
+      first = false;
+      wrap.appendChild(el('div', 'holabel', label));
+      wrap.appendChild(el('div', 'hosub', describe));
+      if (warn) wrap.appendChild(el('div', 'howarn', warn));
+      if (h.canLaunch) {
+        const b = el('button', 'hobtn', h.busy === target ? 'Opening…' : 'Open in Claude Code');
+        b.disabled = !!h.busy;
+        b.addEventListener('click', () => void openInClaudeCode(c, target));
+        const row = el('div', 'cmdrow');
+        row.appendChild(b);
+        wrap.appendChild(row);
+      }
+      // The outcome belongs to the button that produced it, and "…run this yourself"
+      // goes above the command it introduces.
+      const mine = h.note && h.note.target === target && h.busy === null;
+      const note = mine ? el('div', 'honote ' + h.note.tone, h.note.text) : null;
+      if (note && h.note.tone === 'bad') wrap.appendChild(note);
+      if (!h.canLaunch || h.shown[target]) wrap.appendChild(commandRow(h[target].command));
+      if (note && h.note.tone === 'good') wrap.appendChild(note);
+      host.appendChild(wrap);
+    };
+
+    item('chat', 'Continue this chat', 'Reopens this conversation exactly where you left it.');
+    item(
+      'analysis',
+      'See why it was rated this way',
+      'Reopens the session that gave this message its urgency and summary.',
+      'Heads-up: that session was told to answer only with a rating, so its first reply will ' +
+        'look like raw data. Ask it to talk normally and it will.',
+    );
+
+  }
+
   /* -------------------------------- turns -------------------------------- */
 
   function submitComposer() {
@@ -837,6 +1012,14 @@
         syncHead();
         scrollDown(false);
         panel.ta.focus();
+      }
+      // The first turn is what creates the resumable chat session, and any turn can
+      // replace it (a failed resume starts a fresh one). Re-ask rather than hand out a
+      // session id that no longer exists — and tell the thread pane, which caches its
+      // own copy of the same answer.
+      if (c.sessionId && (!c.handoff.chat || c.handoff.chat.sessionId !== c.sessionId)) {
+        void loadHandoff(c);
+        if (typeof window.loadHandoff === 'function') void window.loadHandoff(c.id);
       }
     }
   }
