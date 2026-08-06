@@ -13,6 +13,9 @@ import {
   markMessageDeleted,
   markAnalysisStale,
   ensureWatchStart,
+  upsertSlackUser,
+  listUserIdsNeedingProfile,
+  type SlackUserProfile,
   type ThreadRow,
 } from './db.js';
 import { registerIngestHealth } from './health.js';
@@ -45,6 +48,21 @@ const METADATA_RETRY_MS = 10 * 60_000;
 
 /** Depth cap for walking untrusted `blocks` payloads. */
 const BLOCK_SCAN_MAX_DEPTH = 8;
+
+/**
+ * Profile sweep bounds. `users.info` is Tier 4 (~100 calls/minute), and the Slack
+ * WebClient already honours Retry-After on a 429 — these keep a sweep an order of
+ * magnitude under the limit anyway, because filling in who people are is never urgent.
+ */
+const PROFILE_SWEEP_DELAY_MS = 600;
+const PROFILE_SWEEP_MAX_USERS = 100;
+/** Let the catch-up sweep have the connection to itself first. */
+const PROFILE_SWEEP_START_DELAY_MS = 30_000;
+/** Titles change (promotions, role moves), so a stored profile is refreshed eventually. */
+const PROFILE_STALE_MS = 14 * 24 * 60 * 60_000;
+const PROFILE_SWEEP_EVERY_MS = 6 * 60 * 60_000;
+/** Slack profile text is written by the person themselves: cap what we store. */
+const MAX_PROFILE_FIELD = 120;
 
 export interface WorkspaceRuntime {
   key: string;
@@ -94,7 +112,72 @@ export function mentionsUser(ev: any, userId: string): boolean {
   return blocksMentionUser(ev?.blocks, userId);
 }
 
-// ---------- Slack lookups ----------
+// ---------- who the sender is ----------
+
+/**
+ * One field of a Slack profile, made safe to store and to put in a prompt: people write
+ * their own display name and job title, so a newline in one could otherwise forge a
+ * transcript line or a section marker. Collapsed to a single line and capped.
+ */
+export function cleanProfileField(value: unknown, max = MAX_PROFILE_FIELD): string | null {
+  if (typeof value !== 'string') return null;
+  const s = value.replace(/\s+/g, ' ').trim();
+  if (s === '') return null;
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
+function boolOrNull(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null;
+}
+
+/**
+ * What `users.info` carries beyond the display name, distilled for storage.
+ *
+ * Verified against both of this install's workspaces under the manifest's existing
+ * `users:read` scope: `profile.title`, `profile.real_name` / `display_name`, the top-level
+ * `is_admin` / `is_owner` / `is_primary_owner` / `is_bot` flags and `tz` / `tz_label` all
+ * come back. (`profile.email` does NOT — that needs `users:read.email`, which this app does
+ * not request, and nothing here wants it.) Every field is optional: a workspace that hides
+ * titles, or a response we only half understand, yields nulls rather than an exception.
+ */
+export function profileFromUsersInfo(
+  workspace: string,
+  userId: string,
+  user: unknown,
+): SlackUserProfile {
+  const u = (user ?? {}) as Record<string, any>;
+  const profile = (u.profile ?? {}) as Record<string, unknown>;
+  return {
+    workspace,
+    userId,
+    displayName: cleanProfileField(profile.display_name) ?? cleanProfileField(u.name),
+    realName: cleanProfileField(profile.real_name) ?? cleanProfileField(u.real_name),
+    title: cleanProfileField(profile.title),
+    isAdmin: boolOrNull(u.is_admin),
+    isOwner: boolOrNull(u.is_owner),
+    isPrimaryOwner: boolOrNull(u.is_primary_owner),
+    isBot: boolOrNull(u.is_bot),
+    tz: cleanProfileField(u.tz, 60),
+    tzLabel: cleanProfileField(u.tz_label, 60),
+  };
+}
+
+function nameFromUsersInfo(user: unknown): string | null {
+  const u = (user ?? {}) as Record<string, any>;
+  return u?.profile?.display_name || u?.profile?.real_name || u?.real_name || u?.name || null;
+}
+
+/**
+ * Store what a `users.info` response says about someone. Best effort in the strongest
+ * sense: a database hiccup here must never cost us the message that triggered the lookup.
+ */
+function storeProfile(rt: WorkspaceRuntime, userId: string, user: unknown): void {
+  try {
+    upsertSlackUser(profileFromUsersInfo(rt.key, userId, user));
+  } catch (err) {
+    console.warn(`[${rt.key}] could not store the profile for ${userId}:`, (err as Error).message);
+  }
+}
 
 async function resolveUserName(
   rt: WorkspaceRuntime,
@@ -106,8 +189,10 @@ async function resolveUserName(
   try {
     const res = await rt.client.users.info({ user: userId });
     const u = (res as any).user;
-    const name: string | null =
-      u?.profile?.display_name || u?.profile?.real_name || u?.real_name || u?.name || null;
+    const name: string | null = nameFromUsersInfo(u);
+    // The same response already carries the title and the admin/owner flags, so learning
+    // who this person is costs no extra API call — just a row.
+    storeProfile(rt, userId, u);
     // Only successes are cached: a transient failure must not pin this user to "unknown"
     // for the lifetime of the process.
     if (name !== null) rt.userNameCache.set(userId, name);
@@ -117,6 +202,63 @@ async function resolveUserName(
     return null;
   }
 }
+
+const profileSweepInFlight = new Set<string>();
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Fill in the people we already have messages from but no profile for — the backlog in an
+ * existing database, plus anyone whose stored profile has gone stale.
+ *
+ * Live messages fill themselves in for free (the name lookup already calls `users.info`),
+ * so this only ever has the leftovers to do. Serialized and paced, capped per run, and
+ * every failure is skipped rather than retried: a profile we cannot fetch is a line the
+ * prompt simply does not have, never a reason to stop ingesting.
+ */
+export async function syncUserProfiles(rt: WorkspaceRuntime): Promise<number> {
+  if (profileSweepInFlight.has(rt.key)) return 0;
+  profileSweepInFlight.add(rt.key);
+  let filled = 0;
+  try {
+    let userIds: string[] = [];
+    try {
+      userIds = listUserIdsNeedingProfile(
+        rt.key,
+        new Date(Date.now() - PROFILE_STALE_MS).toISOString(),
+        PROFILE_SWEEP_MAX_USERS,
+      );
+    } catch (err) {
+      console.warn(`[${rt.key}] could not list people needing a profile:`, (err as Error).message);
+      return 0;
+    }
+
+    for (let i = 0; i < userIds.length; i++) {
+      if (i > 0) await sleep(PROFILE_SWEEP_DELAY_MS);
+      const userId = userIds[i];
+      try {
+        const res = await rt.client.users.info({ user: userId });
+        const u = (res as any).user;
+        storeProfile(rt, userId, u);
+        const name = nameFromUsersInfo(u);
+        if (name !== null) rt.userNameCache.set(userId, name);
+        filled += 1;
+      } catch (err) {
+        console.warn(`[${rt.key}] users.info failed for ${userId}:`, (err as Error).message);
+      }
+    }
+    if (filled > 0) {
+      console.log(`[${rt.key}] filled in ${filled} Slack profile(s) for people in the feed`);
+    }
+  } finally {
+    profileSweepInFlight.delete(rt.key);
+  }
+  return filled;
+}
+
+// ---------- Slack lookups ----------
 
 async function resolveChannelName(rt: WorkspaceRuntime, channelId: string): Promise<string | null> {
   try {
@@ -566,4 +708,17 @@ export async function startIngest(ws: Workspace): Promise<void> {
 
   startBackfillScheduler(backfillCtx);
   void runBackfill(backfillCtx, 'full', 'startup');
+
+  /*
+   * Who everyone is, in the background: the backlog of people already in the database, then
+   * a slow refresh so a changed job title is not stale forever. Deliberately not awaited,
+   * and deliberately behind the catch-up sweep — knowing someone's job title is never worth
+   * competing for API calls with the messages themselves.
+   */
+  setTimeout(() => {
+    void syncUserProfiles(rt);
+  }, PROFILE_SWEEP_START_DELAY_MS).unref();
+  setInterval(() => {
+    void syncUserProfiles(rt);
+  }, PROFILE_SWEEP_EVERY_MS).unref();
 }

@@ -23,6 +23,32 @@ db.exec('PRAGMA foreign_keys = ON;');
 // lock fails instantly with SQLITE_BUSY and its message is lost.
 db.exec('PRAGMA busy_timeout = 5000;');
 
+/**
+ * A table that did not exist in an older database is created below by `CREATE TABLE IF NOT
+ * EXISTS`, which touches no existing row — but a live `data.db` is the user's own messages,
+ * so the first time we widen its schema we take the same `VACUUM INTO` snapshot the
+ * row-rewriting migrations take (a plain file copy would miss the WAL). One-time by
+ * construction: once the table exists there is nothing to back up. Never fatal — a failed
+ * backup must not stop the app from starting, and nothing is being overwritten anyway.
+ */
+function backupBeforeNewTable(table: string): void {
+  try {
+    const has = (name: string): boolean =>
+      db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !==
+      undefined;
+    if (has(table) || !has('threads')) return; // already there, or a brand-new database
+    const rows = Number(
+      (db.prepare('SELECT COUNT(*) AS n FROM threads').get() as { n?: number })?.n ?? 0,
+    );
+    if (rows === 0) return; // nothing of the user's to lose
+    console.log(`[db] adding table ${table}; backup: ${backupDatabase()}`);
+  } catch (err) {
+    console.warn(`[db] backup before adding ${table} skipped: ${(err as Error).message}`);
+  }
+}
+
+backupBeforeNewTable('slack_users');
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS threads (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,6 +99,35 @@ db.exec(`
     last_ts TEXT,
     updated_at TEXT,
     PRIMARY KEY (workspace, channel_id)
+  );
+
+  /*
+   * Who the people in a thread actually are. The analyzer used to weigh seniority purely
+   * from cues inside the transcript — it could only learn that the sender is the user's
+   * manager if somebody happened to say so. Slack already tells us (users.info, under the
+   * users:read scope this app has): job title, real/display name, and the workspace
+   * admin/owner flags. One row per (workspace, user); filled in as messages arrive and by
+   * a paced sweep, and every field is nullable because a lookup may fail or come back
+   * empty and that must never block a message or an analysis.
+   *
+   * Additive table — an existing database picks it up on first run with no data migration.
+   * The values are Slack-controlled text: they are cleaned at write time (single line,
+   * length-capped) and framed as untrusted data in the prompt.
+   */
+  CREATE TABLE IF NOT EXISTS slack_users (
+    workspace TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    display_name TEXT,
+    real_name TEXT,
+    title TEXT,
+    is_admin INTEGER,
+    is_owner INTEGER,
+    is_primary_owner INTEGER,
+    is_bot INTEGER,
+    tz TEXT,
+    tz_label TEXT,
+    updated_at TEXT,
+    PRIMARY KEY (workspace, user_id)
   );
 
   /*
@@ -155,6 +210,40 @@ export interface AnalysisRow {
   covered_through_ts: string | null;
   analyzed_at: string | null;
   session_id: string | null;
+}
+
+/**
+ * What Slack knows about one person, as stored. Booleans are SQLite integers (1/0) and
+ * every field is nullable: `null` means "Slack did not tell us", never "false".
+ */
+export interface SlackUserRow {
+  workspace: string;
+  user_id: string;
+  display_name: string | null;
+  real_name: string | null;
+  title: string | null;
+  is_admin: number | null;
+  is_owner: number | null;
+  is_primary_owner: number | null;
+  is_bot: number | null;
+  tz: string | null;
+  tz_label: string | null;
+  updated_at: string | null;
+}
+
+/** The write shape — what src/ingest.ts distils out of a `users.info` response. */
+export interface SlackUserProfile {
+  workspace: string;
+  userId: string;
+  displayName: string | null;
+  realName: string | null;
+  title: string | null;
+  isAdmin: boolean | null;
+  isOwner: boolean | null;
+  isPrimaryOwner: boolean | null;
+  isBot: boolean | null;
+  tz: string | null;
+  tzLabel: string | null;
 }
 
 export interface FeedItem {
@@ -496,6 +585,107 @@ export function setThreadStatus(id: number, status: 'new' | 'seen' | 'done'): bo
     throw new Error(`setThreadStatus: invalid status ${JSON.stringify(status)}`);
   }
   return stmtSetStatus.run(status, id).changes > 0;
+}
+
+// ---------- who the people are (Slack profiles) ----------
+
+/*
+ * COALESCE on update: a later lookup that came back thinner than an earlier one (Slack
+ * omits a field, a workspace hides titles, a partial response) must never erase a value we
+ * already had. The only way a stored fact disappears is Slack actively contradicting it.
+ */
+const stmtUpsertSlackUser = db.prepare(
+  `INSERT INTO slack_users
+     (workspace, user_id, display_name, real_name, title,
+      is_admin, is_owner, is_primary_owner, is_bot, tz, tz_label, updated_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+   ON CONFLICT(workspace, user_id) DO UPDATE SET
+     display_name = COALESCE(excluded.display_name, slack_users.display_name),
+     real_name = COALESCE(excluded.real_name, slack_users.real_name),
+     title = COALESCE(excluded.title, slack_users.title),
+     is_admin = COALESCE(excluded.is_admin, slack_users.is_admin),
+     is_owner = COALESCE(excluded.is_owner, slack_users.is_owner),
+     is_primary_owner = COALESCE(excluded.is_primary_owner, slack_users.is_primary_owner),
+     is_bot = COALESCE(excluded.is_bot, slack_users.is_bot),
+     tz = COALESCE(excluded.tz, slack_users.tz),
+     tz_label = COALESCE(excluded.tz_label, slack_users.tz_label),
+     updated_at = excluded.updated_at`,
+);
+
+const stmtGetSlackUser = db.prepare(
+  'SELECT * FROM slack_users WHERE workspace = ? AND user_id = ?',
+);
+
+/*
+ * People we have messages from but no profile for (or one that has gone stale), most
+ * recently active first — the sweep in src/ingest.ts works through this, paced. Ordering by
+ * recency means the handful of calls a sweep can afford are spent on the people whose
+ * threads are actually being triaged.
+ */
+const stmtUsersNeedingProfile = db.prepare(
+  `SELECT m.author_id AS user_id, MAX(CAST(m.ts AS REAL)) AS recent
+     FROM messages m
+     JOIN threads t ON t.id = m.thread_id
+     LEFT JOIN slack_users u ON u.workspace = t.workspace AND u.user_id = m.author_id
+    WHERE t.workspace = ?
+      AND m.author_id IS NOT NULL
+      AND (u.user_id IS NULL OR u.updated_at IS NULL OR u.updated_at < ?)
+    GROUP BY m.author_id
+    ORDER BY recent DESC
+    LIMIT ?`,
+);
+
+/** Store (or refresh) what Slack says about one person. */
+export function upsertSlackUser(p: SlackUserProfile): void {
+  const flag = (v: boolean | null): number | null => (v === null ? null : v ? 1 : 0);
+  stmtUpsertSlackUser.run(
+    p.workspace,
+    p.userId,
+    p.displayName,
+    p.realName,
+    p.title,
+    flag(p.isAdmin),
+    flag(p.isOwner),
+    flag(p.isPrimaryOwner),
+    flag(p.isBot),
+    p.tz,
+    p.tzLabel,
+    new Date().toISOString(),
+  );
+}
+
+export function getSlackUser(workspace: string, userId: string): SlackUserRow | undefined {
+  return stmtGetSlackUser.get(workspace, userId) as SlackUserRow | undefined;
+}
+
+/**
+ * Profiles for the people in one thread. Anyone we know nothing about is simply absent
+ * from the map — the prompt says so rather than guessing.
+ */
+export function getSlackUsers(workspace: string, userIds: string[]): Map<string, SlackUserRow> {
+  const out = new Map<string, SlackUserRow>();
+  for (const id of new Set(userIds)) {
+    if (id === '') continue;
+    const row = getSlackUser(workspace, id);
+    if (row !== undefined) out.set(id, row);
+  }
+  return out;
+}
+
+/**
+ * User ids in this workspace whose profile is missing or older than `staleBefore` (an ISO
+ * timestamp), newest activity first, capped at `limit`.
+ */
+export function listUserIdsNeedingProfile(
+  workspace: string,
+  staleBefore: string,
+  limit: number,
+): string[] {
+  if (limit <= 0) return [];
+  const rows = stmtUsersNeedingProfile.all(workspace, staleBefore, limit) as Array<{
+    user_id?: unknown;
+  }>;
+  return rows.map((r) => String(r.user_id)).filter((id) => id !== '' && id !== 'null');
 }
 
 // ---------- catch-up (backfill) state ----------

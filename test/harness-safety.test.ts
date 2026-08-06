@@ -221,14 +221,17 @@ test('claude-code: the PreToolUse net never consumes the call budget', async () 
   if (access.mode !== 'read-only') return;
 
   // 20 hook checks of an allowed tool…
+  // …then the counting gate still has its full budget of 10. (The analysis budget was
+  // raised from 5 to 10 when the prompt stopped rationing lookups and started saying "use
+  // tools as needed"; the ceiling stays, as a backstop against a run going in circles.)
+  assert.equal(access.maxCalls, 10);
   for (let i = 0; i < 20; i++) assert.equal(access.nameGate('mcp__calendar__list_events').allow, true);
-  // …then the counting gate still has its full budget of 5.
   for (let i = 0; i < access.maxCalls; i++) {
     assert.equal(access.gate('mcp__calendar__list_events').allow, true, `call ${i + 1}`);
   }
   const spent = access.gate('mcp__calendar__list_events');
   assert.equal(spent.allow, false);
-  assert.match(spent.allow === false ? spent.reason : '', /Tool budget of 5 lookups is spent/);
+  assert.match(spent.allow === false ? spent.reason : '', /Tool budget of 10 lookups is spent/);
 });
 
 test('chat gets its own budget (8) and its own wording', () => {
@@ -275,7 +278,10 @@ test('the analyzer drives a provider end to end and stores the verdict', async (
 
   const req = fake.requests[0];
   assert.equal(req.purpose, 'analysis');
-  assert.equal(req.maxTurns, 8);
+  // Turns are pinned to the tool budget + 4: a lookup costs a turn, and running out of
+  // turns fails the analysis outright while running out of budget just asks for the
+  // verdict. Raised with the budget (5→10 lookups, 8→14 turns).
+  assert.equal(req.maxTurns, 14);
   assert.equal(req.timeoutMs, 180_000);
   assert.deepEqual(req.session, { mode: 'seed', id: null });
   assert.equal(req.tools.mode, 'read-only', 'a proven read-only harness gets the core gate');

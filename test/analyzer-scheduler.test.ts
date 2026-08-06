@@ -1,7 +1,15 @@
 /**
  * CHARACTERIZATION — src/analyzer.ts scheduler *decisions*: the "needs analysis"
  * predicate, the 45s debounce, the 5-minute failure backoff, the forced-reanalysis
- * queue jump and the strict one-at-a-time rule.
+ * queue jump and the bounded-pool rule.
+ *
+ * BEHAVIOUR CHANGE, DELIBERATE: this file used to assert "strictly one analysis at a
+ * time". The analyzer now runs a bounded pool, so that test has been rewritten (not
+ * deleted, not weakened) to assert the invariants that replaced it:
+ *   - at most COPILOT_ANALYZER_CONCURRENCY analyses in flight, however many ticks fire;
+ *   - never two analyses of the same thread.
+ * The narrower serial guarantee is still pinned, at COPILOT_ANALYZER_CONCURRENCY=1, in
+ * test/analyzer-concurrency.test.ts.
  *
  * NO AI HARNESS IS EVER REACHED. Every thread seeded here deliberately has zero
  * messages, so `analyzeThread()` throws "thread has no messages" before it can build a
@@ -17,6 +25,7 @@ const db = await import('../src/db.js');
 assertIsolated(db.DB_PATH);
 const { pickNext, tick, requestReanalysis } = await import('../src/analyzer.js');
 const { analyzerHealth } = await import('../src/health.js');
+const { ANALYZER_CONCURRENCY } = await import('../src/config.js');
 
 const now = (): number => Date.now() / 1000;
 const ts = (secondsAgo: number): string => (now() - secondsAgo).toFixed(6);
@@ -216,24 +225,48 @@ test('requestReanalysis reports the queue depth (threads needing analysis ∪ fo
 });
 
 // ---------------------------------------------------------------------------
-// tick(): serial execution and the failure backoff
+// tick(): the bounded pool and the failure backoff
 // ---------------------------------------------------------------------------
 
-test('tick: strictly one analysis at a time', async () => {
-  seedThread({ channel_id: 'C1', thread_ts: '1', last_activity: ts(600) });
-  seedThread({ channel_id: 'C2', thread_ts: '2', last_activity: ts(700) });
+/**
+ * REPLACES 'tick: strictly one analysis at a time'.
+ *
+ * The old rule was `if (inFlight) return`, and this test asserted that three tick() calls
+ * produced exactly one attempt. The scheduler is now a bounded pool, so the guarantee it
+ * offers is different — and this is the test that says what the new one is. It is
+ * deliberately stronger than "not more than one": it pins the cap, pins that extra ticks
+ * cannot widen it, and pins that no thread is ever run twice at once.
+ */
+test('tick: at most COPILOT_ANALYZER_CONCURRENCY analyses at once, never two of one thread', async () => {
+  const seeded: number[] = [];
+  for (let i = 0; i < ANALYZER_CONCURRENCY + 3; i++) {
+    seeded.push(seedThread({ channel_id: `C${i}`, thread_ts: String(i), last_activity: ts(600 + i) }));
+  }
+  assert.ok(seeded.length > ANALYZER_CONCURRENCY, 'more work than the pool can hold at once');
   const before = analyzerHealth().consecutiveFailures;
 
-  tick(); // starts an analysis (which will fail: the thread has no messages)
-  tick(); // must be a no-op while the first is in flight
+  // One tick fills the pool — and stops there, even though more threads are eligible.
   tick();
+  const filled = analyzerHealth().currentThreadIds;
+  assert.equal(filled.length, ANALYZER_CONCURRENCY, 'the pool is filled to its limit, no further');
+  assert.ok(filled.length < seeded.length, 'and the limit really did hold work back');
+  assert.equal(new Set(filled).size, filled.length, 'no thread is in flight twice');
+
+  // Extra ticks while the pool is full cannot widen it (the old `if (inFlight) return`).
+  tick();
+  tick();
+  assert.deepEqual(analyzerHealth().currentThreadIds, filled, 'a full pool ignores further ticks');
+
   await settle();
 
+  // Every seeded thread is attempted exactly once: the pool drains the backlog rather
+  // than dropping it, and the failure backoff stops any of them being retried.
   assert.equal(
     analyzerHealth().consecutiveFailures - before,
-    1,
-    'three tick() calls must have produced exactly one analysis attempt',
+    seeded.length,
+    'each eligible thread was analyzed exactly once',
   );
+  assert.deepEqual(analyzerHealth().currentThreadIds, [], 'and the pool is empty again');
 });
 
 test('tick: a failed thread is not retried for 5 minutes, and reanalyze clears that', async () => {

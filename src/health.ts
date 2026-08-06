@@ -80,19 +80,45 @@ export interface AnalyzerHealth {
   lastOk: string | null;
   /** Most recent failure; cleared by the next success. */
   lastError: AnalyzerFailure | null;
-  /** Thread currently being analyzed, if any. */
+  /**
+   * Thread currently being analyzed, if any.
+   *
+   * The analyzer now runs a bounded pool rather than one run at a time, so this scalar
+   * is defined as **the longest-running analysis in flight** (the first entry of
+   * `currentThreadIds`). With a pool of one — the old behaviour — it is exactly what it
+   * always was. It is deliberately NOT the most recent start: a field that hopped between
+   * threads every few seconds would make the UI's spinner jump around.
+   */
   currentThreadId: number | null;
+  /**
+   * ADDITIVE: every thread with an analysis in flight right now, longest-running first.
+   * `[]` when idle, `[n]` when one run is going. Callers that only understand a single
+   * thread can keep reading `currentThreadId` and see no change.
+   */
+  currentThreadIds: number[];
+  /**
+   * ADDITIVE: how many analyses may run at once. `limit` is what the scheduler is
+   * willing to start right now, which drops toward 1 after the harness reports being
+   * throttled and climbs back to `configured` as runs succeed again.
+   */
+  concurrency: { limit: number; configured: number };
   /** Consecutive failures since the last success — a "1" is noise, a "5" is a real outage. */
   consecutiveFailures: number;
 }
 
-const analyzer: AnalyzerHealth = {
+/** The stored shape: the list is the truth, `currentThreadId` is derived from it. */
+type AnalyzerRegistry = Omit<AnalyzerHealth, 'currentThreadId'>;
+
+const analyzer: AnalyzerRegistry = {
   state: 'idle',
   note: null,
   queued: 0,
   lastOk: null,
   lastError: null,
-  currentThreadId: null,
+  currentThreadIds: [],
+  // Overwritten at import by src/analyzer.ts, which owns the pool. This placeholder is
+  // only ever visible to something that imports health.ts without the analyzer.
+  concurrency: { limit: 1, configured: 1 },
   consecutiveFailures: 0,
 };
 
@@ -104,7 +130,9 @@ export function analyzerHealth(): AnalyzerHealth {
     queued: analyzer.queued,
     lastOk: analyzer.lastOk,
     lastError: analyzer.lastError === null ? null : { ...analyzer.lastError },
-    currentThreadId: analyzer.currentThreadId,
+    currentThreadId: analyzer.currentThreadIds[0] ?? null,
+    currentThreadIds: [...analyzer.currentThreadIds],
+    concurrency: { ...analyzer.concurrency },
     consecutiveFailures: analyzer.consecutiveFailures,
   };
 }
@@ -112,7 +140,7 @@ export function analyzerHealth(): AnalyzerHealth {
 export function setAnalyzerDisabled(note: string | null = null): void {
   analyzer.state = 'disabled';
   analyzer.note = note;
-  analyzer.currentThreadId = null;
+  analyzer.currentThreadIds = [];
 }
 
 /** Called by the scheduler; `queued` is the backlog size at that moment. */
@@ -120,24 +148,51 @@ export function setAnalyzerQueued(queued: number): void {
   analyzer.queued = Math.max(0, queued);
 }
 
+/**
+ * Called by the scheduler whenever its pool size changes — at boot, and each time the
+ * adaptive backoff steps the allowance down or up. Both numbers are clamped to sane
+ * values here so a bad caller cannot make /api/status claim something absurd.
+ */
+export function setAnalyzerConcurrency(limit: number, configured: number): void {
+  analyzer.concurrency = {
+    limit: Math.max(1, Math.floor(limit)),
+    configured: Math.max(1, Math.floor(configured)),
+  };
+}
+
 export function analyzerRunStarted(threadId: number): void {
   if (analyzer.state === 'disabled') return;
   analyzer.state = 'analyzing';
-  analyzer.currentThreadId = threadId;
+  if (!analyzer.currentThreadIds.includes(threadId)) analyzer.currentThreadIds.push(threadId);
 }
 
-export function analyzerRunSucceeded(): void {
+/**
+ * A run finished. `threadId` says WHICH one, so that one analysis ending does not blank a
+ * field that its siblings are still using. Omitting it means "nothing is in flight any
+ * more", which is what the single-run scheduler always meant.
+ */
+function runEnded(threadId: number | undefined): void {
+  if (threadId === undefined) analyzer.currentThreadIds = [];
+  else analyzer.currentThreadIds = analyzer.currentThreadIds.filter((id) => id !== threadId);
+}
+
+export function analyzerRunSucceeded(threadId?: number): void {
   analyzer.lastOk = new Date().toISOString();
   analyzer.lastError = null;
   analyzer.consecutiveFailures = 0;
-  analyzer.currentThreadId = null;
-  if (analyzer.state !== 'disabled') analyzer.state = 'idle';
+  runEnded(threadId);
+  // Still busy ⇒ still "analyzing". With a pool of one this is always 'idle', as before.
+  if (analyzer.state !== 'disabled') {
+    analyzer.state = analyzer.currentThreadIds.length > 0 ? 'analyzing' : 'idle';
+  }
 }
 
-export function analyzerRunFailed(failure: AnalyzerFailure): void {
+export function analyzerRunFailed(failure: AnalyzerFailure, threadId?: number): void {
   analyzer.lastError = failure;
   analyzer.consecutiveFailures += 1;
-  analyzer.currentThreadId = null;
+  runEnded(threadId);
+  // 'error' wins even while siblings are still running: a live failure is the thing the
+  // user needs to see, and `currentThreadIds` still says work is happening.
   if (analyzer.state !== 'disabled') analyzer.state = 'error';
 }
 

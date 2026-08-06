@@ -8,7 +8,17 @@ import './helpers/env.js';
 import { assertIsolated } from './helpers/env.js';
 import test, { beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { raw, resetDb, seedThread, seedMessage, threadRow, messageRows, countRows } from './helpers/fixtures.js';
+import {
+  raw,
+  resetDb,
+  seedThread,
+  seedMessage,
+  seedSlackUser,
+  slackUserRow,
+  threadRow,
+  messageRows,
+  countRows,
+} from './helpers/fixtures.js';
 
 const db = await import('../src/db.js');
 assertIsolated(db.DB_PATH);
@@ -408,6 +418,133 @@ test('listRecentMentionThreads: mention threads only, newest first, capped', () 
   assert.deepEqual(recent(1), [{ channel_id: 'C2', thread_ts: '2' }]);
   assert.deepEqual(db.listRecentMentionThreads('A', '100.000000', 0), [], 'a zero budget asks for nothing');
   assert.deepEqual(db.listRecentMentionThreads('A', '100.000000', -5), []);
+});
+
+// ---------------------------------------------------------------------------
+// who the people are: the slack_users table
+// ---------------------------------------------------------------------------
+
+const profile = (over: Partial<Parameters<typeof db.upsertSlackUser>[0]> = {}) => ({
+  workspace: 'A',
+  userId: 'U_ELLEN',
+  displayName: 'Ellen',
+  realName: 'Ellen Example',
+  title: 'VP Operations',
+  isAdmin: true,
+  isOwner: false,
+  isPrimaryOwner: false,
+  isBot: false,
+  tz: 'America/Los_Angeles',
+  tzLabel: 'Pacific Daylight Time',
+  ...over,
+});
+
+test('upsertSlackUser: stores the profile, booleans as 1/0, and stamps updated_at', () => {
+  db.upsertSlackUser(profile());
+  const row = db.getSlackUser('A', 'U_ELLEN');
+  assert.equal(row?.display_name, 'Ellen');
+  assert.equal(row?.real_name, 'Ellen Example');
+  assert.equal(row?.title, 'VP Operations');
+  assert.equal(row?.is_admin, 1);
+  assert.equal(row?.is_owner, 0);
+  assert.equal(row?.is_bot, 0);
+  assert.equal(row?.tz_label, 'Pacific Daylight Time');
+  assert.match(String(row?.updated_at), /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(db.getSlackUser('A', 'U_NOBODY'), undefined);
+  assert.equal(db.getSlackUser('B', 'U_ELLEN'), undefined, 'profiles are per workspace');
+});
+
+test('upsertSlackUser: "Slack did not say" is null, never false', () => {
+  db.upsertSlackUser(
+    profile({ title: null, isAdmin: null, isOwner: null, isPrimaryOwner: null, isBot: null, tz: null, tzLabel: null }),
+  );
+  const row = db.getSlackUser('A', 'U_ELLEN');
+  assert.equal(row?.title, null);
+  assert.equal(row?.is_admin, null);
+  assert.equal(row?.is_bot, null);
+});
+
+test('upsertSlackUser: a later, thinner lookup never erases what we already knew', () => {
+  db.upsertSlackUser(profile());
+  // Slack answers again, this time without the title or the flags (hidden profile fields,
+  // a partial response, a workspace that does not expose them).
+  db.upsertSlackUser(profile({ displayName: 'Ellen V.', title: null, isAdmin: null, tzLabel: null }));
+  const row = db.getSlackUser('A', 'U_ELLEN');
+  assert.equal(row?.display_name, 'Ellen V.', 'a value Slack did send is updated');
+  assert.equal(row?.title, 'VP Operations', 'and one it omitted is kept');
+  assert.equal(row?.is_admin, 1);
+  assert.equal(row?.tz_label, 'Pacific Daylight Time');
+  assert.equal(countRows('slack_users'), 1, 'one row per (workspace, user)');
+});
+
+test('upsertSlackUser: Slack actively contradicting a flag does overwrite it', () => {
+  db.upsertSlackUser(profile({ isAdmin: true }));
+  db.upsertSlackUser(profile({ isAdmin: false }));
+  assert.equal(db.getSlackUser('A', 'U_ELLEN')?.is_admin, 0);
+});
+
+test('getSlackUsers: the people we know, keyed by id; strangers are simply absent', () => {
+  seedSlackUser({ user_id: 'U1', display_name: 'One', title: 'CEO' });
+  seedSlackUser({ user_id: 'U2', display_name: 'Two' });
+  seedSlackUser({ workspace: 'B', user_id: 'U3', display_name: 'Three' });
+
+  const found = db.getSlackUsers('A', ['U1', 'U2', 'U1', 'U3', '']);
+  assert.deepEqual([...found.keys()].sort(), ['U1', 'U2']);
+  assert.equal(found.get('U1')?.title, 'CEO');
+  assert.equal(db.getSlackUsers('A', []).size, 0);
+});
+
+test('listUserIdsNeedingProfile: missing or stale profiles, most recently active first', () => {
+  const id = seedThread({ workspace: 'A' });
+  seedMessage({ thread_id: id, ts: '1000.000100', author_id: 'U_OLD' });
+  seedMessage({ thread_id: id, ts: '3000.000100', author_id: 'U_NEW' });
+  seedMessage({ thread_id: id, ts: '2000.000100', author_id: 'U_KNOWN' });
+  seedMessage({ thread_id: id, ts: '2500.000100', author_id: 'U_STALE' });
+  seedMessage({ thread_id: id, ts: '2600.000100', author_id: null });
+  seedSlackUser({ user_id: 'U_KNOWN', updated_at: '2026-08-01T00:00:00.000Z' });
+  seedSlackUser({ user_id: 'U_STALE', updated_at: '2026-01-01T00:00:00.000Z' });
+
+  const cutoff = '2026-07-01T00:00:00.000Z';
+  assert.deepEqual(db.listUserIdsNeedingProfile('A', cutoff, 10), ['U_NEW', 'U_STALE', 'U_OLD']);
+  assert.deepEqual(db.listUserIdsNeedingProfile('A', cutoff, 1), ['U_NEW'], 'capped');
+  assert.deepEqual(db.listUserIdsNeedingProfile('A', cutoff, 0), [], 'a zero budget asks for nothing');
+  assert.deepEqual(db.listUserIdsNeedingProfile('B', cutoff, 10), [], 'per workspace');
+});
+
+test('listUserIdsNeedingProfile: a profile with no timestamp counts as missing', () => {
+  const id = seedThread();
+  seedMessage({ thread_id: id, author_id: 'U_BLANK' });
+  seedSlackUser({ user_id: 'U_BLANK', updated_at: null });
+  assert.deepEqual(db.listUserIdsNeedingProfile('A', '2026-07-01T00:00:00.000Z', 10), ['U_BLANK']);
+});
+
+test('slack_users is additive: nothing else in the schema changed shape', () => {
+  // The table is new, so an existing database gains it without a rebuild; the row it holds
+  // is keyed on (workspace, user_id) and nothing references it, so a profile can never
+  // block a message from being stored.
+  const cols = (raw().prepare('PRAGMA table_info(slack_users)').all() as Array<{ name: string }>)
+    .map((c) => c.name)
+    .sort();
+  assert.deepEqual(cols, [
+    'display_name',
+    'is_admin',
+    'is_bot',
+    'is_owner',
+    'is_primary_owner',
+    'real_name',
+    'title',
+    'tz',
+    'tz_label',
+    'updated_at',
+    'user_id',
+    'workspace',
+  ]);
+  assert.deepEqual(
+    (raw().prepare('PRAGMA foreign_key_list(slack_users)').all() as unknown[]).length,
+    0,
+  );
+  seedSlackUser({ user_id: 'U_X' });
+  assert.equal(slackUserRow('A', 'U_X')?.display_name, 'Other Person');
 });
 
 // ---------------------------------------------------------------------------

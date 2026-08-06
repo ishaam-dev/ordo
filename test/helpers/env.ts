@@ -41,6 +41,9 @@ delete process.env.COPILOT_HARNESS;
 delete process.env.COPILOT_HARNESS_COMMAND;
 delete process.env.COPILOT_HARNESS_MODEL;
 delete process.env.COPILOT_HARNESS_SPEND_OK;
+// …and the analyzer pool size, for the same reason: the suite pins the DEFAULT, and a
+// test file that wants a specific concurrency sets it explicitly after this import.
+delete process.env.COPILOT_ANALYZER_CONCURRENCY;
 
 process.on('exit', () => {
   try {

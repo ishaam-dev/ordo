@@ -35,6 +35,7 @@ export function resetDb(): void {
     'messages',
     'threads',
     'sync_state',
+    'slack_users',
   ]) {
     if (present.has(table)) db.exec(`DELETE FROM ${table}`);
   }
@@ -100,6 +101,55 @@ export function seedMessage(m: MessageFixture): number {
       m.raw ?? null,
     );
   return Number(res.lastInsertRowid);
+}
+
+export interface SlackUserFixture {
+  workspace?: string;
+  user_id?: string;
+  display_name?: string | null;
+  real_name?: string | null;
+  title?: string | null;
+  is_admin?: number | null;
+  is_owner?: number | null;
+  is_primary_owner?: number | null;
+  is_bot?: number | null;
+  tz?: string | null;
+  tz_label?: string | null;
+  updated_at?: string | null;
+}
+
+/** Insert a Slack profile row directly (bypassing src/db.ts). */
+export function seedSlackUser(u: SlackUserFixture = {}): void {
+  raw()
+    .prepare(
+      `INSERT INTO slack_users
+         (workspace, user_id, display_name, real_name, title,
+          is_admin, is_owner, is_primary_owner, is_bot, tz, tz_label, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      u.workspace ?? 'A',
+      u.user_id ?? 'U_OTHER',
+      'display_name' in u ? u.display_name : 'Other Person',
+      'real_name' in u ? u.real_name : null,
+      'title' in u ? u.title : null,
+      'is_admin' in u ? u.is_admin : null,
+      'is_owner' in u ? u.is_owner : null,
+      'is_primary_owner' in u ? u.is_primary_owner : null,
+      'is_bot' in u ? u.is_bot : null,
+      'tz' in u ? u.tz : null,
+      'tz_label' in u ? u.tz_label : null,
+      'updated_at' in u ? u.updated_at : '2026-08-01T00:00:00.000Z',
+    );
+}
+
+export function slackUserRow(
+  workspace: string,
+  userId: string,
+): Record<string, unknown> | undefined {
+  return raw()
+    .prepare('SELECT * FROM slack_users WHERE workspace = ? AND user_id = ?')
+    .get(workspace, userId) as Record<string, unknown> | undefined;
 }
 
 export function threadRow(id: number): Record<string, unknown> | undefined {
