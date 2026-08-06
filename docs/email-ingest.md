@@ -1064,3 +1064,66 @@ existing safety-proof corpus (`src/harness/probe.ts`) with an email-shaped paylo
 hidden HTML text instructing the model to call `apply_sensitive_thread_label`, and assert the
 gate refuses and the budget is not consumed. The proof machinery already exists; this is a new
 fixture, not new machinery.
+
+---
+
+# Appendix B — auth alternatives, researched separately
+
+A second pass went looking for paths the main investigation didn't cover. Two findings
+change the picture; the rest close doors, which is also useful.
+
+## B.1 Apps Script — the option nobody proposed
+
+A Google Apps Script, written by the user, using `GmailApp`, deployed as a web app that
+the Mac app calls over HTTPS with a secret in the URL.
+
+- **No Cloud project, no OAuth client, no consent screen.** Apps Script uses an
+  auto-created default Cloud project. Google's own client-verification table gives
+  publisher = Workspace account A, user = Workspace account A → "normal auth flow".
+- Mail goes Google → the Mac. No third party, which keeps the app's core promise intact.
+- Workspace quota is 50,000 Gmail reads/day; 6 minutes per execution.
+- Costs: the deployment URL *is* a bearer credential and must be treated like a token;
+  an admin can disable "anyone with the link" deployments, or Apps Script entirely.
+
+This is the least setup of any viable path and deserves to be prototyped against option 3
+before committing to OAuth.
+
+## B.2 Internal OAuth — confirmed, and lighter than assumed
+
+All five claimed advantages verified against primary Google documentation: no verification
+review, no CASA security assessment, no unverified-app screen, no 100-user cap, and the
+7-day refresh-token expiry provably cannot apply (it is an External-Testing-only rule).
+
+**Super admin is not required.** Users in a Workspace domain are granted Project Creator at
+the organization level by default, and project creation defaults to on. The one hard
+prerequisite is that the project has an organization parent — which happens automatically
+for a Workspace-domain user, and is exactly what fails for a personal `@gmail.com` account.
+
+**One 60-second check settles the whole path:** create a project and see whether
+*Audience → Internal* is selectable. If it is, everything above holds.
+
+Two caveats worth writing down:
+- An admin can flip Gmail to "Restricted" in app-access control, which **revokes existing
+  tokens** — so this can break the app mid-life, not just at setup.
+- OAuth clients unused for 6 months are auto-deleted (restorable for 30 days), and refresh
+  tokens die after 6 months idle or on a password change. Real hazards for a personal app.
+
+## B.3 Closed, with reasons
+
+- **Hosted aggregators (Nylas, Unipile, Aurinko, Nango, Composio…)** — structurally
+  incompatible, not merely expensive. Whoever owns the OAuth client carries the CASA
+  assessment, so a vendor cannot let a raw token escape into an un-assessed desktop binary.
+  Either the vendor proxies the mail (breaking "everything stays on your Mac") or you must
+  bring your own Google client anyway — in which case the vendor solved nothing. Nango,
+  the BYO-credentials option, explicitly still requires your own Google Cloud client.
+- **Domain-wide delegation** — needs super admin, and grants impersonation of every user in
+  the domain from a key sitting on a laptop. Strictly more burden and strictly worse
+  security than Internal OAuth.
+- **Apple Mail's local store** — technically works (full message bodies are always cached;
+  `rfc822msgid:` gives a reliable Gmail deep link), but requires Full Disk Access, and
+  setting up the account in Apple Mail is itself a Google OAuth flow. It avoids *our* OAuth
+  burden, not OAuth. A single admin toggle disabling IMAP kills it outright.
+- **Google Data Portability API** — covers Chrome, Maps, YouTube, Fitbit. No mail scopes.
+- **Pub/Sub push, forwarding to a local listener, Vault, Takeout, a Chrome extension** —
+  each fails on a hard constraint (needs a Cloud project, needs a public MX, needs
+  Enterprise + admin, no incremental export, needs a browser).
