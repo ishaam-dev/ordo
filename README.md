@@ -38,25 +38,37 @@ authentication dance that involves pasting a slash command into Slack and readin
 code back out. So the intended way to install this is to let a coding agent do it
 with you.
 
-**Use Claude Code.** Not out of loyalty — the app itself runs on it. Rating your
-conversations is done by Claude through your own Claude Code login, so it has to be
-installed and signed in on this Mac either way. Setting up with anything else just
-means installing Claude Code at the end anyway.
+**Use Claude Code unless you already prefer something else.** It is what the app
+uses out of the box and it is much the smoothest path: it runs on the Claude
+subscription you are already signed in to, it can pull in context from the other
+apps you have connected, and chat about a conversation carries on from the reading
+the app has already done.
 
-If you don't have it yet: [install Claude Code](https://claude.com/claude-code),
+You can run it on a different assistant — **Pi** or **Codex** — and that is a single
+choice, made once: whichever one you pick sets the app up now *and* reads your Slack
+conversations afterwards. There is nothing else to install at the end. If you want
+one of those, skim [Using a different AI agent](#using-a-different-ai-agent) below
+first — it is one extra line in a file, and the agent will write that line for you.
+
+If you don't have Claude Code yet: [install Claude Code](https://claude.com/claude-code),
 then run `claude auth login` once.
 
 You don't need to download this project first — the agent fetches it itself. Open a
-terminal in whatever folder you keep projects in, type `claude`, and paste the block
-below. Then just answer its questions — it does everything else. Say yes when it
-asks permission to run commands or edit files; it can't do the setup otherwise.
+terminal in whatever folder you keep projects in, start your assistant (type
+`claude`, or `pi`, or `codex`), and paste the block below. Then just answer its
+questions — it does everything else. Say yes when it asks permission to run commands
+or edit files; it can't do the setup otherwise.
 
 ````text
 You are setting up an app called "Slack Copilot" on my Mac.
 
-The finished app runs Claude through my local Claude Code login — that is what
-reads and rates my Slack conversations — so being signed in matters twice over: for
-you now, and for the app afterwards.
+The finished app runs an AI assistant of my choosing — that is what reads and rates
+my Slack conversations. Claude Code is the default and the one to use unless I say
+otherwise; the app also accepts "pi" and "codex". Ask me which one I want at STEP 0,
+and if I don't have a preference, use Claude Code and tell me that's what you did.
+Whichever I choose is the same assistant that has to be installed and signed in on
+this Mac when we finish — so being signed in matters twice over: for you now, and
+for the app afterwards.
 
 The code lives at https://github.com/ishaam-dev/slack-copilot
 
@@ -102,13 +114,13 @@ sentence first.
 5. VERIFY EVERY STEP with a real command, and when something fails, read the ACTUAL
    error text and diagnose from that. Don't assume it worked.
 
-6. If a step needs a decision from me — one workspace or two, which workspace is A
-   — ask me.
+6. If a step needs a decision from me — which AI assistant, one workspace or two,
+   which workspace is A — ask me.
 
 === WHAT WE ARE BUILDING ===
 
-A local app that watches my Slack DMs and @-mentions, has Claude rate how urgent
-each conversation is, and shows them in one prioritized list on my Mac.
+A local app that watches my Slack DMs and @-mentions, has an AI assistant rate how
+urgent each conversation is, and shows them in one prioritized list on my Mac.
 
 === WHAT IT NEEDS (check or install each of these with me) ===
 
@@ -116,11 +128,16 @@ each conversation is, and shows them in one prioritized list on my Mac.
   old, install it with `brew install node`. Homebrew puts Node in /opt/homebrew/bin,
   which isn't always on PATH — if a later command says "node: command not found",
   that's why.
-- Claude Code, signed in (`claude auth status` → loggedIn true). The app shells out
-  to Claude Code to read and rate my conversations, so this has to be true when we
-  finish, not just right now. If it reports not signed in, have me run
-  `claude auth login` — signing in is mine to do, in a browser. There is no API key
-  in this project and you should never ask me for one.
+- The AI assistant I chose, installed and signed in. The app hands each conversation
+  to it, so this has to be true when we finish, not just right now.
+    Claude Code (the default): `claude auth status` should say loggedIn true; if not,
+      have me run `claude auth login`.
+    Pi: install with `npm install -g --ignore-scripts @earendil-works/pi-coding-agent`,
+      sign in with `pi /login`.
+    Codex: install with `npm install -g @openai/codex`, sign in with `codex login`.
+  Signing in is mine to do, in a browser. This project has no API key of its own and
+  you must never ask me for one — if my assistant wants a key, it reads it from my
+  own environment and I put it there myself, never in this chat.
 - A Slack app in EACH workspace I want to watch — one app per workspace, so one or
   two of them. These don't exist yet: you are going to create them.
   **Create them with the Slack command-line tool** (`slack app install`), from the
@@ -136,11 +153,22 @@ yourself and stopping for the parts only I can do.
 
 === THE STEPS ===
 
-STEP 0 — Check the machine.
+STEP 0 — Check the machine, and settle the two questions you need answered.
+  First ask me which AI assistant the app should run on: Claude Code (the default,
+  and what most people should pick), Pi, or Codex. If I don't mind, choose Claude
+  Code and say so. If I pick Pi or Codex, tell me plainly, in one sentence each,
+  what I give up: neither can see my other apps for context, both charge my own AI
+  account per message rather than running on a subscription — so the automatic
+  rating stays switched off until we add one line to .env at STEP 7 — and Codex
+  also can't carry the analysis over into chat or stream replies as they're
+  written. Then note my answer; it decides STEP 7.
   Check: `node -v` is 22 or newer (if Node is missing, install it with
   `brew install node`; note Homebrew's Node lives in /opt/homebrew/bin and may not
-  be on PATH in every shell), `npm -v` works, and `claude auth status` reports
-  loggedIn true. Tell me if any of these need fixing and fix what you can.
+  be on PATH in every shell), `npm -v` works, and my chosen assistant is installed
+  and signed in — `claude auth status` reports loggedIn true for Claude Code, or
+  `pi --version` / `codex --version` answers for the other two, which then need
+  `pi /login` or `codex login`. Tell me if any of these need fixing and fix what
+  you can.
   Also ask me now: one Slack workspace or two? And warn me that if my workspace
   requires admin approval for new apps, we will hit a wall at step 5 — ask whether
   I already know.
@@ -240,6 +268,17 @@ STEP 7 — The .env file.
   Workspace A and workspace B are just slots — if I have one workspace, fill A and
   delete or leave blank the B lines. The comments at the top of .env.example name
   the original author's workspaces; have me replace them with mine.
+
+  Then, if I picked something other than Claude Code at STEP 0, add the assistant
+  setting to the same file. These are not secrets, so YOU add them, not me:
+      COPILOT_HARNESS=pi          (or codex — leave the line out for Claude Code)
+      COPILOT_HARNESS_SPEND_OK=1  (only if I say yes — see below)
+  Pi and Codex bill my own AI account for every message they read, so the app
+  deliberately leaves automatic rating switched OFF for them until that second line
+  exists. Explain that, ask me whether to switch it on, and respect my answer —
+  without it the app still runs, still collects my messages, and I can still chat
+  about any of them; it just won't rate them on its own.
+
   Then run `chmod 600 .env` (so only I can read it) and confirm git ignores it with
   `git check-ignore .env`.
   You may verify ONLY that each line's value starts with xoxp- or xapp- and is long
@@ -249,7 +288,7 @@ STEP 7 — The .env file.
 STEP 8 — Run it.
   First check nothing else is already running it: if http://127.0.0.1:5252 already
   answers, a copy is running and you must NOT start a second one — two copies
-  against the same database double the Slack traffic and double the Claude usage.
+  against the same database double the Slack traffic and double the AI usage.
   Otherwise run `npm run dev` and open http://127.0.0.1:5252.
 
 STEP 9 — Check it actually works, and don't declare victory early.
@@ -258,10 +297,12 @@ STEP 9 — Check it actually works, and don't declare victory early.
     the list within a few seconds.
   - Within a few minutes, items should stop saying "Waiting to be prioritized" and
     get an urgency rating. If everything stays unrated, the app puts the reason on
-    screen — read it out to me and fix it. The usual cause is Claude not being
-    signed in, which `claude auth login` fixes.
-  - Also read the terminal output for lines starting with [config] or [main] —
-    they say which workspaces were accepted.
+    screen, in the words of whichever assistant we chose, and usually with the exact
+    command that fixes it — read it out to me and do what it says rather than
+    guessing. The usual cause is that assistant not being signed in.
+  - Also read the terminal output for lines starting with [config], [main] or
+    [harness] — they say which workspaces were accepted, which assistant is running,
+    and whether it passed the app's own safety check at startup.
 
 STEP 10 — Install it as a proper Mac app (ask me first whether I want this).
   Run `npm run app:build`, then tell me to double-click install.command in the
@@ -283,6 +324,48 @@ too, but you may have to grant filesystem and terminal access first, and some
 agents will need you to run the commands yourself and paste back the output — in
 that case tell it so at the start, and it will adapt.
 
+### Using a different AI agent
+
+Slack Copilot runs on **Claude Code** unless you tell it otherwise. To use something
+else, add one line to the `.env` file in the project folder:
+
+```
+COPILOT_HARNESS=pi
+```
+
+The values it accepts are `claude-code` (the default), `pi` and `codex`. Leave the
+line out and nothing changes.
+
+They are not the same, and the differences are worth a minute before you switch:
+
+| | Claude Code (default) | Pi | Codex |
+|---|---|---|---|
+| **Signing in** | `claude auth login` | `pi /login` | `codex login` |
+| **What it costs** | Your existing Claude subscription's allowance | Your own AI account, charged per message it reads | Your own OpenAI account, charged per message it reads |
+| **Rates your messages on its own** | Yes | Only once you add `COPILOT_HARNESS_SPEND_OK=1` to `.env` | Only once you add `COPILOT_HARNESS_SPEND_OK=1` to `.env` |
+| **Context from your other apps** | Yes — it can read (never change) the tools you have already connected to Claude Code, like a calendar or a task list | No, none | No, none |
+| **Chat picks up where the rating left off** | Yes — it starts from the thinking behind the rating | Yes | No — each chat starts from the conversation and the app's summary of it |
+| **Replies appear** | Word by word as they're written | Word by word | All at once, when they're ready |
+| **Installing it** | [claude.com/claude-code](https://claude.com/claude-code) | `npm install -g --ignore-scripts @earendil-works/pi-coding-agent` | `npm install -g @openai/codex` |
+
+The row that surprises people is the third one. Pi and Codex bill your own AI account
+for every message they read, so the app will not run that in the background until you
+say so in writing. Everything else still works meanwhile — messages still arrive, the
+list still works, and you can still open a chat about any conversation.
+
+**One thing the app does for you whichever you pick:** before any of your messages are
+sent to an assistant, it checks for itself that the assistant can't write files or
+reach out to the network — and one that can't demonstrate that is used with no tools
+at all.
+
+**If the assistant you named isn't there**, the app still starts. Slack still comes in,
+the list still works, and you can still send replies — what stops is the rating, and
+the app tells you so on screen in that assistant's own words, with its own command to
+fix it. A Codex user is never told to sign in to Claude. A value the app doesn't
+recognise is treated as a typo rather than guessed at: it refuses to start and prints
+the ones it knows, rather than quietly falling back to Claude Code and running up an
+account you didn't mean to use.
+
 ---
 
 ## What you need before you start
@@ -297,7 +380,7 @@ by hand.
 |---|---|
 | **A Mac** | Apple Silicon (M1 or later). The packaged app is built for `mac-arm64` only. |
 | **Node 22 or newer** | `brew install node`. Homebrew puts it in `/opt/homebrew/bin`, which is not always on the PATH of a non-login shell — if `node -v` says "command not found" in some window, that is why. |
-| **Claude Code, signed in** | Install it, then run `claude auth login`. Slack Copilot runs Claude through *your* local Claude Code login — there is no API key anywhere in this project, and you are never asked for one. `claude auth status` should say `"loggedIn": true`. Expect this to use your Claude plan's allowance — every conversation gets analyzed, and if you hit a usage limit the app says so and resumes when it resets. |
+| **An AI assistant, signed in** | **Claude Code** unless you choose otherwise: install it, then run `claude auth login` (`claude auth status` should say `"loggedIn": true`). Slack Copilot runs it through *your* own login — there is no API key anywhere in this project, and you are never asked for one. Expect it to use your Claude plan's allowance: every conversation gets read, and if you hit a usage limit the app says so and resumes when it resets. Pi and Codex work too, with real trade-offs — see [Using a different AI agent](#using-a-different-ai-agent). |
 | **One or two Slack workspaces** | The app has two slots, **A** and **B**. Fill in one if you only have one workspace, both if you have two. There is no slot C. |
 | **Permission to install an app in those workspaces** | ⚠️ **This is the blocker.** Many companies require an admin to approve every new Slack app. If yours does, the install step will offer you a **"Request to Install"** button instead of installing, and nothing works until a Slack admin approves it. Find out now, before you do the rest of the work: ask your Slack admin, or look at **Settings & administration → Manage apps** in Slack and see whether it says app approval is required. |
 
@@ -319,6 +402,11 @@ claude auth status     # should include "loggedIn": true — else: claude auth l
 
 Homebrew's Node lives in `/opt/homebrew/bin`. If a shell can't find `node`, put
 that directory on your PATH.
+
+That third line is for Claude Code, which is what the app uses unless you say
+otherwise. If you would rather run it on Pi or Codex, check that one instead
+(`pi --version` then `pi /login`, or `codex --version` then `codex login`) and read
+[Using a different AI agent](#using-a-different-ai-agent) before step 7.
 
 ### 2. Install the Slack CLI
 
@@ -466,6 +554,14 @@ author's workspaces, so replace them with yours. A workspace is only switched on
 skipped with a warning on startup (`src/config.ts`). One workspace is fine: fill
 `A`, leave `B` empty.
 
+Two optional lines belong in the same file if you are not using the default
+assistant — see [Using a different AI agent](#using-a-different-ai-agent):
+
+```
+COPILOT_HARNESS=pi            # claude-code (default) | pi | codex
+COPILOT_HARNESS_SPEND_OK=1    # only for pi/codex: yes, rate my messages automatically
+```
+
 ### 8. Run it
 
 ```bash
@@ -484,8 +580,10 @@ starting its own.)
 - Send yourself a DM in Slack (a DM to Slackbot is easiest) — it should appear in
   the feed within seconds.
 - Within a few minutes, items stop saying *"Waiting to be prioritized"* and get an
-  urgency rating. If they never do, the app tells you why on screen — most often
-  Claude isn't signed in, fixed by `claude auth login`.
+  urgency rating. If they never do, the app tells you why on screen, along with the
+  command that fixes it — most often the assistant isn't signed in (`claude auth
+  login` for the default). The startup log's `[harness]` line says which assistant
+  is running and whether it passed the app's own safety check.
 
 ### 10. Install the Mac app (optional but recommended)
 
@@ -573,6 +671,8 @@ You can run the whole thing without the mouse. Press `?` for the full list.
 Press `c` on any conversation and a chat panel opens on the right. Claude already
 knows that thread — it has read it and formed a view — so you can start with
 "what's the fastest way out of this?" or "draft something polite that says no".
+(If you switched the app to Codex, each chat instead starts from the conversation
+and the rating it was given, rather than the thinking behind it.)
 
 When Claude proposes a reply, it appears as a **draft in an editable box**. Nothing
 is sent until you press the send button, which is labelled with where it's going.
@@ -642,10 +742,11 @@ One Node process and an Electron shell around it. Slack pushes new messages down
 Socket Mode connection (so there's no public URL or tunnel anywhere); a catch-up
 sweep asks Slack for anything missed while your laptop was shut, because Socket Mode
 never replays; everything is filtered down to your DMs and your mentions and stored
-in a local SQLite file; a serial worker hands each conversation to Claude through
-the Claude Agent SDK — read-only, no tools that can change anything — and writes back
-an urgency, a reason, a summary and a suggested action; a small Express server bound
-to `127.0.0.1` serves the UI and the chat stream.
+in a local SQLite file; a serial worker hands each conversation to the AI assistant
+you chose — read-only, with no tools that can change anything, which the app proves
+to itself before sending anything — and writes back an urgency, a reason, a summary
+and a suggested action; a small Express server bound to `127.0.0.1` serves the UI and
+the chat stream.
 
 The full architecture, including why each of those choices was made and the security
 model, is in **[DESIGN.md](DESIGN.md)**.
@@ -662,13 +763,17 @@ Everything stays on your Mac.
   environment before it starts.
 - **Your messages** live in `data.db`, a SQLite file in the same folder. Both `.env`
   and `data.db` are gitignored, so neither can be committed by accident.
-- **Claude runs through your own local Claude Code login.** There is no API key in
-  this project, nothing is billed to anyone else, and no Anthropic account beyond
-  your own is involved. Message text goes to Claude only as part of analyzing your
-  own threads, exactly as it would if you pasted it into Claude Code yourself.
+- **The AI runs through your own login on this Mac** — Claude Code by default, or Pi
+  or Codex if you chose one of those. There is no API key in this project, nothing is
+  billed to anyone else, and no account beyond your own is involved. Your messages go
+  to it only as part of reading your own threads, exactly as they would if you pasted
+  the conversation in yourself.
 - **Nothing is ever posted to Slack without a click.** The send path is a plain
   endpoint that posts the bytes in its request body — the text you just looked at.
-  Claude's sessions run with no tools that could reach it.
+  The assistant's sessions run with no tools that could reach it, and before your
+  messages are sent anywhere the app checks for itself that the assistant it is about
+  to use cannot write files or reach the network; one that can't show that is given no
+  tools at all.
 - **The window is served from your own Mac.** The server binds to `127.0.0.1` only,
   rejects requests with any other `Host`, and requires a token minted fresh each run.
   Nothing about it is on the internet and nobody else can open it.
@@ -734,7 +839,11 @@ activity log** — a Finder window opens with the files they will ask for.
 | Pasting `manifest.json` into api.slack.com gives *"Something went wrong"* | The web form rejects `background_color` without a 175+ character `long_description`. Use `slack app install` instead, and don't add those fields. |
 | `slack manifest validate` asks you to pick an app | You have more than one app in the project. Re-run with the `--app A...` value it suggests. |
 | Startup says *"workspace A: tokens present but incomplete or placeholder"* | One of that workspace's two tokens is missing, still `xoxp-...`, or has the wrong prefix. Both must be there for the workspace to switch on. |
-| Everything sits at **"Waiting to be prioritized"** | Claude isn't reachable. The app names the reason on screen; usually `claude auth login` fixes it. It also happens when a Claude usage limit has been hit — then it resumes on its own. |
+| Everything sits at **"Waiting to be prioritized"** | The assistant isn't reachable. The app names the reason on screen and offers that assistant's own fix — usually its sign-in command (`claude auth login` for the default). It also happens when a usage limit has been hit, and then it resumes on its own. |
+| The app says your assistant **is not installed on this Mac** | Whatever `COPILOT_HARNESS` names in `.env` isn't on this machine. Install it — the message carries the exact command — or delete that line to go back to Claude Code. Messages keep arriving and replies keep sending meanwhile; only the rating stops. |
+| The app says it **could not prove it runs safely on this Mac** | The check the app runs before sharing anything — that the assistant can't write files or reach the network — didn't pass, so nothing is being sent to it. Update that assistant, or switch back to Claude Code in `.env`. This is a deliberate stop, not a crash. |
+| It **won't start at all**, saying *"COPILOT_HARNESS=… is not a harness this app knows"* | A typo in `.env`. The values it accepts are printed with the message: `claude-code`, `codex`, `pi`. It refuses rather than guessing, because guessing would quietly use an account you didn't choose. |
+| Nothing is being rated and the app mentions **`COPILOT_HARNESS_SPEND_OK`** | Pi and Codex charge your own AI account for every message they read, so automatic rating stays off until you add `COPILOT_HARNESS_SPEND_OK=1` to `.env` and restart. Chat still works without it. |
 | Feed stays empty and both dots are red | Tokens are wrong or the app was uninstalled from the workspace. Check `slack app list` shows *Installed*. |
 | Nothing appears, and you have two copies running | Only run one. Check `127.0.0.1:5252` before starting anything, and quit the Mac app first if you want `npm run dev` to own the port. |
 | A `slack` command offers you apps you've never seen, or fails with an auth error on one | `.slack/apps.json` is committed, so a fresh clone inherits the previous owner's apps. Reduce it to `{ "apps": {} }`; your own `slack app install` refills it. |
@@ -769,11 +878,21 @@ npm run typecheck    # tsc --noEmit (no build step; tsx runs the TypeScript dire
 npm run app:build    # builds release/mac-arm64/Slack Copilot.app (ad-hoc signed)
 npm run app:dev      # runs the Electron shell from source, without packaging
 npm run app:icons    # regenerates assets/ from code (no binary assets in git)
+npm run harness:probe   # checks each AI assistant's read-only claim on this Mac
 ```
 
 Useful env switches: `PORT`, `COPILOT_DB_PATH` (throwaway database),
 `ANALYZER_DISABLED=1`, `COPILOT_REPLY_DRYRUN=1` (exercise the send path without
 messaging anyone).
+
+The AI assistant is chosen with `COPILOT_HARNESS` (`claude-code` | `pi` | `codex`,
+default `claude-code`); `COPILOT_HARNESS_COMMAND` points at a specific binary,
+`COPILOT_HARNESS_MODEL` picks the model, and `COPILOT_HARNESS_SPEND_OK=1` lets an
+assistant that bills per token run the background rating. `npm run harness:probe`
+prints each one's tool posture, whether it is installed, and the result of its
+read-only proof; `--live` additionally spends one real run per assistant on a
+prompt that tries to write a file, reach a local canary and obey an injected
+instruction. The design behind all of it is `docs/harness-providers.md`.
 
 `CLAUDE.md` is the working guide for agents changing this code; `DESIGN.md` is the
 architecture; `docs/ux.md` is the UI spec.
@@ -823,7 +942,8 @@ and `data.db` from the project directory, and can never drift from the dev setup
 - **Node discovery.** GUI apps launched at login get a minimal `PATH`, so the app
   looks for Node in `/opt/homebrew/bin`, `/usr/local/bin`, `/opt/local/bin`,
   `/usr/bin` (newest with major ≥ 22, for `node:sqlite`), and borrows the login
-  shell's `PATH` for the child so the analyzer can find the `claude` CLI.
+  shell's `PATH` for the child so the analyzer can find the `claude` command — or
+  `pi` or `codex`, if that is what `COPILOT_HARNESS` names.
 - **Signing.** The bundle is ad-hoc signed (`codesign --sign -`). It is not
   notarised, hence the first-open dialog documented above.
 - **Login item.** `app.setLoginItemSettings({ openAtLogin: true })` on first run,
@@ -834,6 +954,7 @@ and `data.db` from the project directory, and can never drift from the dev setup
 
 ```
 src/               the server: config, db, ingest, backfill, analyzer, chat, health
+src/harness/       the AI-assistant layer: the contract, the registry, one file per assistant
 public/            the web UI (one vanilla HTML file + the chat pane)
 electron/          the Mac app (main process, waiting screen, builder config)
 scripts/           icon generation and the build

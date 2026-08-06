@@ -939,3 +939,40 @@ Stated as experiments, not hedges.
    `bad_output` on smaller models. *Experiment:* run 50 threads through Codex with and without
    `--output-schema`, compare `bad_output` rates. Ship it on if it wins; core parsing does not
    change either way.
+
+---
+
+## Appendix: shipped as
+
+This document is the design. Where the implementation in `src/harness/` deviates from it, the
+code is the authority; these are the deviations, so nobody has to diff the two to find them.
+
+- **`ToolDecision` carries two refusal wordings, not one.** `{allow:false, reason, hookReason}`:
+  `reason` is what the harness's per-call permission callback says, `hookReason` what a second
+  enforcement net (a pre-tool-use hook) says. Relatedly `wireGate` receives the whole
+  `ReadOnlyAccess` — `gate` (counts budget), a stateless `nameGate`, and `maxCalls` — rather than
+  a bare `ToolGate`, so the second net cannot double-count the tool budget.
+- **Proof verdicts are cached in memory, not in `sync_state`.** §2 said the result was cached in
+  the db per harness version; it is a `Map` in `src/harness/probe.ts`, so the proof runs once per
+  process. Readiness (`available()` + verdict) has its own TTL cache in `index.ts` — 5 min when
+  ok, 30 s when not. This keeps the rule that nothing under `src/harness/` imports `db.ts`.
+- **A failed proof marks the harness unavailable; it does not "refuse registration".** The
+  provider stays in the REGISTRY, `harnessReadiness()` reports it as unusable with plain-English
+  copy, and `resolveToolAccess()` independently drops it to `{mode:'none'}`. Same outcome for the
+  user, but no import-time throw on a machine-specific condition.
+- **`SafetyProof.run` takes a `ProbeContext`**, not `(dir, env)`: scratch dir, canary URL,
+  sanitized env, the injection corpus, the mutating-tool-name list and a deadline. The corpus and
+  the canary belong to core, so every preset is judged against the same ones.
+- **`HarnessIdentity` gained `shortLabel`** ("Claude" next to label "Claude Code"), because the
+  failure copy puts the name inside a sentence.
+- **Codex ships without resume and without streaming.** §8.4 declared `resumeSession: true,
+  streaming: true` off `--json`; the preset ships `dialect: 'text'` with `resumeSession: false`,
+  `forkSession: false`, `streaming: false`, because the `item.*` family in §11.1 was written from
+  documentation rather than captured bytes. The `codex-jsonl` row exists in `dialects.ts`, unused;
+  flipping it on is a two-line change in the preset once the fixture exists.
+- **`planSession()` has three modes, not four.** There is no `'replay'` (§3's degradation table):
+  a harness that cannot resume seeds every turn from `chat_messages` + transcript + analysis.
+- **`COPILOT_HARNESS_COMMAND` is not validated at boot.** §4's table said "fatal if set and not
+  executable"; it is passed to `spawn` and a bad path surfaces through `available()` as
+  "<label> is not installed on this Mac." with the install command — the same path as a missing
+  binary.
