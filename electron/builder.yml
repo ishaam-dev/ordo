@@ -1,0 +1,45 @@
+# electron-builder configuration for the macOS app.
+#
+# The bundle contains only this folder: the main process, the waiting screen and
+# the icons. The Slack Copilot server itself is NOT copied in — the app runs the
+# project's own source at runtime, so the app can never drift from it, and .env
+# and data.db stay where they are.
+appId: ai.aifund.slack-copilot
+productName: Slack Copilot
+copyright: AI Fund
+
+directories:
+  app: electron
+  buildResources: assets
+  output: release
+
+# Plain files rather than an asar archive: the app is a handful of small scripts,
+# and an unpacked bundle is far easier to inspect when something goes wrong.
+asar: false
+npmRebuild: false
+buildDependenciesFromSource: false
+
+files:
+  - "**/*"
+  - "!builder.yml"
+  # The main process uses nothing but Electron and Node built-ins. Without this,
+  # electron-builder walks up and bundles the *server's* dependencies, which the
+  # app never loads (it runs the project's own copy) and which add ~300 MB.
+  - "!node_modules"
+  - "!node_modules/**/*"
+
+mac:
+  category: public.app-category.productivity
+  icon: icon.icns
+  darkModeSupport: true
+  # Unsigned: there is no Apple Developer certificate here. scripts/build-app.mjs
+  # applies an ad-hoc signature afterwards so macOS treats the bundle as intact.
+  identity: null
+  target:
+    - target: dir
+      arch: arm64
+  extendInfo:
+    # Notifications should be banners the user can click, not silent entries.
+    NSUserNotificationAlertStyle: alert
+    LSMultipleInstancesProhibited: true
+    CFBundleDisplayName: Slack Copilot

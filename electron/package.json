@@ -1,0 +1,10 @@
+{
+  "name": "slack-copilot-mac",
+  "productName": "Slack Copilot",
+  "version": "0.1.0",
+  "description": "Slack Copilot — your Slack messages, sorted by what matters",
+  "main": "main.js",
+  "author": "AI Fund",
+  "license": "UNLICENSED",
+  "private": true
+}

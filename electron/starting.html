@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+<title>Slack Copilot</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; height: 100vh; display: flex; align-items: center; justify-content: center;
+    background: #16181d; color: #e6e9ef;
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+    -webkit-user-select: none; user-select: none;
+  }
+  .box { text-align: center; max-width: 460px; padding: 0 32px; }
+  .mark {
+    width: 56px; height: 56px; margin: 0 auto 22px;
+    border-radius: 16px; background: linear-gradient(160deg, #4c6ef5, #7b3fe4);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .bubble { width: 26px; height: 19px; border-radius: 7px; background: #fff; position: relative; }
+  .bubble::after {
+    content: ""; position: absolute; left: 5px; top: 17px;
+    border: 5px solid transparent; border-top-color: #fff; border-left-color: #fff;
+  }
+  h1 { font-size: 17px; font-weight: 600; margin: 0 0 8px; }
+  p { margin: 0; color: #8b93a3; font-size: 14px; }
+  p + p { margin-top: 10px; }
+  .spinner {
+    width: 18px; height: 18px; margin: 22px auto 0;
+    border: 2px solid #2c313c; border-top-color: #6ea8fe; border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .hidden { display: none; }
+  .warn h1 { color: #f0b03d; }
+</style>
+</head>
+<body>
+  <div class="box" id="box">
+    <div class="mark"><div class="bubble"></div></div>
+    <h1 id="title">Starting Slack Copilot…</h1>
+    <p id="detail">This takes a few seconds the first time.</p>
+    <p id="extra" class="hidden"></p>
+    <div class="spinner" id="spinner"></div>
+  </div>
+
+<script>
+// Copy for each state the app can be in. The app sets the state in the URL hash;
+// nothing here is ever built from Slack content.
+const COPY = {
+  starting: {
+    title: 'Starting Slack Copilot…',
+    detail: 'This takes a few seconds the first time.',
+    spin: true, warn: false,
+  },
+  down: {
+    title: 'Slack Copilot is restarting',
+    detail: 'It stopped unexpectedly and is starting itself again. Nothing is lost.',
+    spin: true, warn: true,
+  },
+  conflict: {
+    title: "Slack Copilot can't start",
+    detail: 'Another program on this Mac is using the connection it needs. Restarting your Mac usually clears this.',
+    spin: false, warn: true,
+  },
+  misconfigured: {
+    title: "Slack Copilot can't find its files",
+    detail: 'Open the Slack Copilot folder and double-click the file called install.command again.',
+    spin: false, warn: true,
+  },
+};
+
+function render() {
+  const params = new URLSearchParams(location.hash.replace(/^#/, ''));
+  const copy = COPY[params.get('state')] || COPY.starting;
+  document.getElementById('title').textContent = copy.title;
+  document.getElementById('detail').textContent = copy.detail;
+  document.getElementById('spinner').classList.toggle('hidden', !copy.spin);
+  document.getElementById('box').classList.toggle('warn', copy.warn);
+
+  const extra = document.getElementById('extra');
+  const msg = params.get('msg');
+  if (msg) {
+    extra.textContent = msg;      // textContent, never innerHTML
+    extra.classList.remove('hidden');
+  } else {
+    extra.classList.add('hidden');
+  }
+}
+
+window.addEventListener('hashchange', render);
+render();
+</script>
+</body>
+</html>
