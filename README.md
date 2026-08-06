@@ -38,13 +38,24 @@ authentication dance that involves pasting a slash command into Slack and readin
 code back out. So the intended way to install this is to let a coding agent do it
 with you.
 
-Open a terminal, go to the folder where you cloned this repo, start Claude Code by
+You don't need to download anything first — the agent fetches the code itself.
+Open a terminal in whatever folder you keep projects in, start Claude Code by
 typing `claude`, and paste the block below. Then just answer its questions — it
 does everything else.
 
 ````text
-You are setting up an app called "Slack Copilot" on my Mac. The repo is in the
-folder this session is open in — if it isn't, ask me where it is before you start.
+You are setting up an app called "Slack Copilot" on my Mac.
+
+The code lives at https://github.com/ishaam-dev/slack-copilot
+
+Start by getting it. If the folder this session is open in already contains this
+project (look for manifest.json and a src/ folder with analyzer.ts in it), use it.
+Otherwise clone it: `git clone https://github.com/ishaam-dev/slack-copilot` and
+work inside the folder it creates — tell me where you put it.
+The repository is PRIVATE, so the clone only works if I've been given access to it
+and my machine is signed in to GitHub. If the clone fails with a "not found" or
+"authentication" error, don't guess or try workarounds — tell me plainly that I
+need to be added to the repo, or need to sign in (`gh auth login`), and wait.
 
 Read README.md, DESIGN.md, .env.example and src/config.ts first so you know what
 the app is and what it needs. Then set it up with me.
