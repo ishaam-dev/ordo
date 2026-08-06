@@ -2,6 +2,7 @@ import { workspaces, PORT } from './config.js';
 import { DB_PATH } from './db.js';
 import { startServer } from './server.js';
 import { startIngest } from './ingest.js';
+import { startAnalyzer } from './analyzer.js';
 
 async function main(): Promise<void> {
   console.log(`[main] db: ${DB_PATH}`);
@@ -13,20 +14,21 @@ async function main(): Promise<void> {
       '[main] no workspaces configured — set tokens in .env (see .env.example). ' +
         'Web UI is up; Slack ingest is idle.',
     );
-    return;
-  }
-
-  console.log(`[main] configured workspaces: ${workspaces.map((w) => w.key).join(', ')}`);
-  for (const ws of workspaces) {
-    try {
-      await startIngest(ws);
-    } catch (err) {
-      console.error(
-        `[main] failed to start ingest for workspace ${ws.key} — check its tokens:`,
-        err,
-      );
+  } else {
+    console.log(`[main] configured workspaces: ${workspaces.map((w) => w.key).join(', ')}`);
+    for (const ws of workspaces) {
+      try {
+        await startIngest(ws);
+      } catch (err) {
+        console.error(
+          `[main] failed to start ingest for workspace ${ws.key} — check its tokens:`,
+          err,
+        );
+      }
     }
   }
+
+  startAnalyzer(); // no-op with ANALYZER_DISABLED=1
 }
 
 main().catch((err) => {

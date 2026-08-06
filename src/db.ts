@@ -245,3 +245,67 @@ export function getAnalysisForThread(threadId: number): AnalysisRow | undefined 
 export function setThreadStatus(id: number, status: 'new' | 'seen' | 'done'): boolean {
   return stmtSetStatus.run(status, id).changes > 0;
 }
+
+// ---------- analyzer support (appended; used by src/analyzer.ts) ----------
+
+const stmtThreadsNeedingAnalysis = db.prepare(
+  `SELECT t.* FROM threads t
+   LEFT JOIN analyses a ON a.thread_id = t.id
+   WHERE t.status != 'done'
+     AND t.last_activity IS NOT NULL
+     AND (
+       a.thread_id IS NULL
+       OR a.covered_through_ts IS NULL
+       OR CAST(t.last_activity AS REAL) > CAST(a.covered_through_ts AS REAL)
+     )
+   ORDER BY CAST(t.last_activity AS REAL) DESC`,
+);
+
+/**
+ * Threads whose analysis is missing or stale (activity after covered_through_ts),
+ * excluding 'done' threads; newest activity first. Debounce/backoff are applied
+ * by the caller (they depend on wall-clock + in-memory attempt state).
+ */
+export function listThreadsNeedingAnalysis(): ThreadRow[] {
+  return stmtThreadsNeedingAnalysis.all() as unknown as ThreadRow[];
+}
+
+const stmtUpsertAnalysis = db.prepare(
+  `INSERT INTO analyses
+     (thread_id, urgency, why, summary, suggested_action, context_notes,
+      covered_through_ts, analyzed_at, session_id)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+   ON CONFLICT(thread_id) DO UPDATE SET
+     urgency = excluded.urgency,
+     why = excluded.why,
+     summary = excluded.summary,
+     suggested_action = excluded.suggested_action,
+     context_notes = excluded.context_notes,
+     covered_through_ts = excluded.covered_through_ts,
+     analyzed_at = excluded.analyzed_at,
+     session_id = excluded.session_id`,
+);
+
+export function upsertAnalysis(a: {
+  threadId: number;
+  urgency: string;
+  why: string;
+  summary: string;
+  suggestedAction: string;
+  contextNotes: string;
+  coveredThroughTs: string | null;
+  analyzedAt: string;
+  sessionId: string | null;
+}): void {
+  stmtUpsertAnalysis.run(
+    a.threadId,
+    a.urgency,
+    a.why,
+    a.summary,
+    a.suggestedAction,
+    a.contextNotes,
+    a.coveredThroughTs,
+    a.analyzedAt,
+    a.sessionId,
+  );
+}
