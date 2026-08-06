@@ -69,7 +69,7 @@ const MUTATION_NAME_RE =
   /create|send|post|update|delete|write|add|remove|archive|label|draft|schedule|respond|submit/i;
 
 /** Extra guard on top of `tools: []` — no built-in tool may run even if injected by settings. */
-const DISALLOWED_BUILTIN_TOOLS = [
+export const DISALLOWED_BUILTIN_TOOLS = [
   'Bash',
   'BashOutput',
   'KillShell',
@@ -90,7 +90,7 @@ const DISALLOWED_BUILTIN_TOOLS = [
   'SlashCommand',
 ];
 
-function isToolAllowed(toolName: string): boolean {
+export function isToolAllowed(toolName: string): boolean {
   if (!toolName.startsWith('mcp__')) return false;
   return !MUTATION_NAME_RE.test(toolName);
 }
@@ -105,7 +105,7 @@ function isToolAllowed(toolName: string): boolean {
  *   the analyzer authenticate via the machine's own Claude Code login, exactly
  *   like a fresh `claude` launch from a clean terminal.
  */
-function sanitizedEnv(): Record<string, string | undefined> {
+export function sanitizedEnv(): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...process.env };
   for (const key of Object.keys(env)) {
     if (key.startsWith('SLACK_') || key.startsWith('CLAUDE') || key === 'ANTHROPIC_BASE_URL') {
@@ -174,7 +174,7 @@ function fmtTime(slackTs: string): string {
 }
 
 /** "[time] Author: text" lines, most recent kept within the char budget. */
-function buildTranscript(messages: MessageRow[], myUserId: string | null): string {
+export function buildTranscript(messages: MessageRow[], myUserId: string | null): string {
   const lines = messages.map((m) => {
     const me = myUserId !== null && m.author_id === myUserId ? ' (me)' : '';
     const who = `${m.author_name ?? m.author_id ?? 'unknown'}${me}`;
@@ -201,7 +201,7 @@ function channelLabel(thread: ThreadRow): string {
   return thread.kind === 'dm' ? `DM with ${name}` : `#${name}`;
 }
 
-function buildPrompt(thread: ThreadRow, messages: MessageRow[], myUserId: string | null): string {
+export function buildPrompt(thread: ThreadRow, messages: MessageRow[], myUserId: string | null): string {
   const identity =
     myUserId !== null
       ? `My Slack user id here is ${myUserId}; transcript lines marked "(me)" are messages I sent myself.`
@@ -223,7 +223,7 @@ Reply with the single JSON verdict object per the output contract.`;
 
 // ---------- result parsing ----------
 
-interface ParsedAnalysis {
+export interface ParsedAnalysis {
   urgency: 'P0' | 'P1' | 'P2' | 'P3';
   why: string;
   summary: string;
@@ -232,7 +232,7 @@ interface ParsedAnalysis {
 }
 
 /** Extract the first balanced {...} block (tolerates fences/prose around it) and parse it. */
-function extractJsonObject(text: string): Record<string, unknown> {
+export function extractJsonObject(text: string): Record<string, unknown> {
   const t = text.trim();
   const start = t.indexOf('{');
   if (start === -1) throw new Error('no JSON object found in result');
@@ -271,7 +271,7 @@ function extractJsonObject(text: string): Record<string, unknown> {
   throw new Error('unbalanced JSON object in result');
 }
 
-function asCappedString(value: unknown, max: number): string {
+export function asCappedString(value: unknown, max: number): string {
   let s: string;
   if (typeof value === 'string') s = value;
   else if (Array.isArray(value)) s = value.map((v) => String(v)).join('\n');
@@ -281,7 +281,7 @@ function asCappedString(value: unknown, max: number): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
 
-function parseAnalysis(text: string): ParsedAnalysis {
+export function parseAnalysis(text: string): ParsedAnalysis {
   const obj = extractJsonObject(text);
   const urgency = String(obj.urgency ?? '')
     .trim()
@@ -475,7 +475,7 @@ function refreshQueueDepth(): void {
   }
 }
 
-function pickNext(): ThreadRow | null {
+export function pickNext(): ThreadRow | null {
   // User-requested re-analyses win, regardless of debounce/backoff/staleness.
   for (const id of forced) {
     forced.delete(id); // one attempt per request; failures fall back to normal backoff
@@ -523,7 +523,7 @@ function logFailure(threadId: number, failure: AnalyzerFailure): void {
   }
 }
 
-function tick(): void {
+export function tick(): void {
   if (inFlight) return; // strictly one analysis at a time
   const thread = pickNext();
   if (thread === null) {

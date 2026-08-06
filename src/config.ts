@@ -7,7 +7,7 @@ export interface Workspace {
 }
 
 /** A token counts as configured only if it is non-empty and not an obvious placeholder. */
-function tokenIfValid(value: string | undefined, prefix: string): string | null {
+export function tokenIfValid(value: string | undefined, prefix: string): string | null {
   const v = (value ?? '').trim();
   if (v === '') return null;
   if (v.includes('...')) return null; // placeholder like "xoxp-..."
@@ -15,7 +15,7 @@ function tokenIfValid(value: string | undefined, prefix: string): string | null 
   return v;
 }
 
-function loadWorkspaces(): Workspace[] {
+export function loadWorkspaces(): Workspace[] {
   const workspaces: Workspace[] = [];
   for (const key of ['A', 'B']) {
     const userRaw = process.env[`SLACK_${key}_USER_TOKEN`];

@@ -233,7 +233,7 @@ export function parseAssistantText(raw: string): ParsedAssistantTurn {
 const MUTATION_NAME_RE =
   /create|send|post|update|delete|write|add|remove|archive|label|draft|schedule|respond|submit/i;
 
-const DISALLOWED_BUILTIN_TOOLS = [
+export const DISALLOWED_BUILTIN_TOOLS = [
   'Bash',
   'BashOutput',
   'KillShell',
@@ -254,13 +254,13 @@ const DISALLOWED_BUILTIN_TOOLS = [
   'SlashCommand',
 ];
 
-function isToolAllowed(toolName: string): boolean {
+export function isToolAllowed(toolName: string): boolean {
   if (!toolName.startsWith('mcp__')) return false;
   return !MUTATION_NAME_RE.test(toolName);
 }
 
 /** Same reasoning as src/analyzer.ts: no Slack tokens and no nested-session markers. */
-function sanitizedEnv(): Record<string, string | undefined> {
+export function sanitizedEnv(): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...process.env };
   for (const key of Object.keys(env)) {
     if (key.startsWith('SLACK_') || key.startsWith('CLAUDE') || key === 'ANTHROPIC_BASE_URL') {
@@ -449,7 +449,7 @@ class StoppedError extends Error {
  * this map the panel would render the SDK's plumbing failure as something Claude said.
  * Verified against this machine's actual (logged-out) SDK output.
  */
-function kindOfAssistantError(code: string): 'auth' | 'budget' | 'rate_limit' | 'bad_output' | 'unknown' {
+export function kindOfAssistantError(code: string): 'auth' | 'budget' | 'rate_limit' | 'bad_output' | 'unknown' {
   switch (code) {
     case 'authentication_failed':
     case 'oauth_org_not_allowed':
@@ -467,13 +467,13 @@ function kindOfAssistantError(code: string): 'auth' | 'budget' | 'rate_limit' | 
 }
 
 /** Friendly tool label: mcp__calendar__list_events → "calendar · list_events". */
-function toolLabel(name: string): string {
+export function toolLabel(name: string): string {
   const parts = name.split('__');
   if (parts.length >= 3) return `${parts[1]} · ${parts.slice(2).join('__')}`;
   return name;
 }
 
-function textFromContent(content: unknown): string {
+export function textFromContent(content: unknown): string {
   if (!Array.isArray(content)) return '';
   const out: string[] = [];
   for (const block of content) {
@@ -685,7 +685,7 @@ function threadIdParam(req: Request, res: Response): number | null {
   return id;
 }
 
-function messagesAfter(messages: MessageRow[], coveredTs: string | null): MessageRow[] {
+export function messagesAfter(messages: MessageRow[], coveredTs: string | null): MessageRow[] {
   if (coveredTs === null || coveredTs === '') return messages;
   const cut = Number.parseFloat(coveredTs);
   if (!Number.isFinite(cut)) return messages;
@@ -695,7 +695,7 @@ function messagesAfter(messages: MessageRow[], coveredTs: string | null): Messag
   });
 }
 
-function destinationFor(thread: ThreadRow): {
+export function destinationFor(thread: ThreadRow): {
   label: string;
   kind: 'dm' | 'mention';
   workspace: string;
@@ -714,7 +714,7 @@ function destinationFor(thread: ThreadRow): {
   };
 }
 
-function serializeHistory(rows: ChatMessageRow[]): Array<{
+export function serializeHistory(rows: ChatMessageRow[]): Array<{
   id: number;
   role: string;
   at: string | null;

@@ -269,7 +269,7 @@ async function repliesSince(
 // ---------- the sweep ----------
 
 /** Where this conversation's sweep starts: stored mark → newest stored message → 3 days. */
-function oldestFor(ctx: BackfillContext, channelId: string): number {
+export function oldestFor(ctx: BackfillContext, channelId: string): number {
   const floor = nowSec() - MAX_LOOKBACK_S;
   const mark =
     getSyncMark(ctx.workspaceKey, channelId) ??

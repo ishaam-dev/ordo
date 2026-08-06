@@ -46,7 +46,7 @@ const METADATA_RETRY_MS = 10 * 60_000;
 /** Depth cap for walking untrusted `blocks` payloads. */
 const BLOCK_SCAN_MAX_DEPTH = 8;
 
-interface WorkspaceRuntime {
+export interface WorkspaceRuntime {
   key: string;
   myUserId: string;
   teamName: string;
@@ -73,7 +73,7 @@ interface WorkspaceRuntime {
  * in `blocks` as `{type:'user', user_id:'U123'}` — and older payloads use the labelled form
  * `<@U123|name>`. Scanning `text` alone silently misses both.
  */
-function blocksMentionUser(node: unknown, userId: string, depth = 0): boolean {
+export function blocksMentionUser(node: unknown, userId: string, depth = 0): boolean {
   if (node === null || typeof node !== 'object' || depth > BLOCK_SCAN_MAX_DEPTH) return false;
   if (Array.isArray(node)) {
     return node.some((child) => blocksMentionUser(child, userId, depth + 1));
@@ -88,7 +88,7 @@ function blocksMentionUser(node: unknown, userId: string, depth = 0): boolean {
   return false;
 }
 
-function mentionsUser(ev: any, userId: string): boolean {
+export function mentionsUser(ev: any, userId: string): boolean {
   const text = typeof ev?.text === 'string' ? ev.text : '';
   if (text.includes(`<@${userId}>`) || text.includes(`<@${userId}|`)) return true;
   return blocksMentionUser(ev?.blocks, userId);
@@ -199,7 +199,7 @@ async function fillMissingMetadata(
  * watching, so the user read it in Slack days ago": the message is stored in full, but the
  * conversation is not marked unread on its account.
  */
-async function ingestMessage(
+export async function ingestMessage(
   rt: WorkspaceRuntime,
   ev: any,
   opts: { historical?: boolean } = {},
@@ -325,7 +325,7 @@ function safeJson(value: unknown): string | null {
  *     and a thread already read stays read. Someone fixing a typo must not put a
  *     conversation back in the inbox.
  */
-async function handleMessageMutation(rt: WorkspaceRuntime, ev: any): Promise<void> {
+export async function handleMessageMutation(rt: WorkspaceRuntime, ev: any): Promise<void> {
   const channelId: unknown = ev?.channel;
   if (typeof channelId !== 'string') return;
 
