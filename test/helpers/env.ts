@@ -35,6 +35,12 @@ for (const key of Object.keys(process.env)) {
 delete process.env.COPILOT_REPLY_DRYRUN;
 delete process.env.ANALYZER_DISABLED;
 delete process.env.PORT;
+// The harness switches too: the suite pins DEFAULT behaviour, so a developer with
+// COPILOT_HARNESS exported in their shell must not silently test a different one.
+delete process.env.COPILOT_HARNESS;
+delete process.env.COPILOT_HARNESS_COMMAND;
+delete process.env.COPILOT_HARNESS_MODEL;
+delete process.env.COPILOT_HARNESS_SPEND_OK;
 
 process.on('exit', () => {
   try {

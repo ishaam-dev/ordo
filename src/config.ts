@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { harnessConfigFromEnv } from './harness/env.js';
 
 export interface Workspace {
   key: string;
@@ -41,3 +42,16 @@ export const PORT: number = (() => {
   const n = raw === '' ? NaN : Number(raw);
   return Number.isInteger(n) && n > 0 && n < 65536 ? n : 5252;
 })();
+
+/**
+ * Which AI harness runs the analysis and the chat. Defaults to 'claude-code', so an
+ * existing install behaves exactly as it did. An unknown value is fatal at boot (see
+ * src/harness/index.ts selectHarness) rather than silently falling back — that would
+ * bill the wrong account and hide the typo. The values are parsed in
+ * src/harness/env.ts, the one file allowed to read process.env inside the harness layer.
+ */
+const harness = harnessConfigFromEnv();
+export const HARNESS_ID: string = harness.id;
+export const HARNESS_COMMAND: string | null = harness.command;
+export const HARNESS_MODEL: string | null = harness.model;
+export const HARNESS_SPEND_OK: boolean = harness.spendOk;

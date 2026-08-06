@@ -795,7 +795,11 @@
                 kind: ev.kind,
                 message: ev.message,
                 hint: ev.hint,
-                command: ev.kind === 'auth' ? 'claude auth login' : null,
+                // The fix command comes from the server, which knows WHICH harness is
+                // running. Inventing 'claude auth login' here told a Codex user to sign
+                // in to the wrong product; render what we are given, and nothing if the
+                // failure has no command.
+                command: ev.command || null,
               };
             }
           }

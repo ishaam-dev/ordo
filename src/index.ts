@@ -1,11 +1,22 @@
 import { workspaces, PORT } from './config.js';
 import { DB_PATH } from './db.js';
+import { selectHarness } from './harness/index.js';
 import { startServer } from './server.js';
 import { startIngest } from './ingest.js';
-import { startAnalyzer } from './analyzer.js';
+import { startAnalyzer, preflightAnalyzerHarness } from './analyzer.js';
 
 async function main(): Promise<void> {
   console.log(`[main] db: ${DB_PATH}`);
+
+  /*
+   * Resolve COPILOT_HARNESS before anything listens. An unknown id is a config error and
+   * is fatal here, with the valid ids printed — falling back to Claude Code silently
+   * would bill the wrong account and hide the typo. A KNOWN harness that is merely
+   * unavailable right now is not fatal: the app starts, Slack ingest and the feed and
+   * the send path all work, and the analyzer reports it with that harness's own fix
+   * command (see preflightAnalyzerHarness below).
+   */
+  selectHarness();
 
   await startServer(PORT);
 
@@ -28,6 +39,7 @@ async function main(): Promise<void> {
     }
   }
 
+  await preflightAnalyzerHarness(); // never throws: reports, it does not crash
   startAnalyzer(); // no-op with ANALYZER_DISABLED=1
 }
 

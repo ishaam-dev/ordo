@@ -37,12 +37,6 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import type { Express, Request, Response } from 'express';
-import {
-  query,
-  type CanUseTool,
-  type HookCallback,
-  type Options,
-} from '@anthropic-ai/claude-agent-sdk';
 import { workspaces } from './config.js';
 import {
   DB_PATH,
@@ -52,7 +46,25 @@ import {
   type MessageRow,
   type ThreadRow,
 } from './db.js';
-import { ClassifiedError, classifyAnalyzerError, type AnalyzerFailure } from './health.js';
+import {
+  activeHarness,
+  ensureHarnessReady,
+  harnessModel,
+  planSession,
+  resolveToolAccess,
+  sanitizedEnv,
+} from './harness/index.js';
+import { MAX_TOOL_CALLS } from './harness/policy.js';
+import { ClassifiedError, HarnessAbortedError, type SessionPlan } from './harness/types.js';
+import { classifyAnalyzerError, type AnalyzerFailure } from './health.js';
+
+/**
+ * The read-only policy, the child environment and the Claude-shaped message helpers all
+ * moved to src/harness/ — these re-exports keep every call site and test pointing at the
+ * single implementation rather than at a second copy that happens to agree.
+ */
+export { DISALLOWED_BUILTIN_TOOLS, isToolAllowed, sanitizedEnv } from './harness/index.js';
+export { kindOfAssistantError, textFromContent } from './harness/claude-code.js';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -60,7 +72,6 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 
 const QUERY_TIMEOUT_MS = 240_000; // hard abort per chat turn
 const MAX_TURNS = 12;
-const MAX_TOOL_CALLS = 8; // read-only MCP lookup budget per turn
 const TRANSCRIPT_CHAR_BUDGET = 12_000; // seeding a fresh session
 const MAX_USER_MESSAGE = 4_000; // what the composer may send Claude
 const MAX_STORED_ASSISTANT = 24_000; // cap on what we persist per assistant turn
@@ -228,48 +239,6 @@ export function parseAssistantText(raw: string): ParsedAssistantTurn {
   return { text, drafts };
 }
 
-// ---------- read-only tool policy (mirrors src/analyzer.ts) ----------
-
-const MUTATION_NAME_RE =
-  /create|send|post|update|delete|write|add|remove|archive|label|draft|schedule|respond|submit/i;
-
-export const DISALLOWED_BUILTIN_TOOLS = [
-  'Bash',
-  'BashOutput',
-  'KillShell',
-  'Read',
-  'Edit',
-  'Write',
-  'MultiEdit',
-  'NotebookEdit',
-  'Glob',
-  'Grep',
-  'WebFetch',
-  'WebSearch',
-  'Task',
-  'Agent',
-  'TodoWrite',
-  'ExitPlanMode',
-  'Skill',
-  'SlashCommand',
-];
-
-export function isToolAllowed(toolName: string): boolean {
-  if (!toolName.startsWith('mcp__')) return false;
-  return !MUTATION_NAME_RE.test(toolName);
-}
-
-/** Same reasoning as src/analyzer.ts: no Slack tokens and no nested-session markers. */
-export function sanitizedEnv(): Record<string, string | undefined> {
-  const env: Record<string, string | undefined> = { ...process.env };
-  for (const key of Object.keys(env)) {
-    if (key.startsWith('SLACK_') || key.startsWith('CLAUDE') || key === 'ANTHROPIC_BASE_URL') {
-      delete env[key];
-    }
-  }
-  return env;
-}
-
 // ---------- identity ----------
 
 const identityCache = new Map<string, string>();
@@ -302,7 +271,7 @@ const SYSTEM_PROMPT = `You are the user's chief of staff, sitting next to them w
 
 WHAT YOU CAN DO
 - Answer questions about the thread, its history and what it implies.
-- Pull extra context with read-only MCP tools (calendar, email, tasks, meetings, ...) — at most ${MAX_TOOL_CALLS} lookups per turn, and only when it genuinely sharpens the answer. Tools that create, send or modify anything are blocked; if a tool is missing or fails, carry on without it.
+- Pull extra context with read-only MCP tools (calendar, email, tasks, meetings, ...) — at most ${MAX_TOOL_CALLS.chat} lookups per turn, and only when it genuinely sharpens the answer. Tools that create, send or modify anything are blocked; if a tool is missing or fails, carry on without it.
 - Propose a reply for the user to send.
 
 WHAT YOU CANNOT DO
@@ -420,14 +389,27 @@ My message to you:
 ${userMessage}`;
 }
 
-// ---------- the SDK call ----------
+// ---------- the harness call ----------
 
 type StreamEvent =
   | { type: 'session'; sessionId: string | null; resumed: boolean }
   | { type: 'delta'; text: string }
   | { type: 'tool'; name: string; phase: 'start' | 'end'; ok?: boolean }
   | { type: 'assistant'; id: number; at: string; text: string; drafts: string[] }
-  | { type: 'error'; kind: string; message: string; hint: string; detail: string }
+  | {
+      type: 'error';
+      kind: string;
+      message: string;
+      hint: string;
+      detail: string;
+      /**
+       * The harness's OWN fix command, e.g. 'claude auth login' / 'codex login'. The
+       * panel used to invent this client-side and always said Claude's, which told a
+       * Codex user to sign in to the wrong product. public/chat.js now renders what it
+       * is given and invents nothing.
+       */
+      command: string | null;
+    }
   | { type: 'done' };
 
 interface TurnResult {
@@ -443,29 +425,6 @@ class StoppedError extends Error {
   }
 }
 
-/**
- * The SDK reports a dead Claude login as an ordinary-looking assistant turn whose text is
- * "Failed to authenticate: ..." — plus a structural `error` field on that message. Without
- * this map the panel would render the SDK's plumbing failure as something Claude said.
- * Verified against this machine's actual (logged-out) SDK output.
- */
-export function kindOfAssistantError(code: string): 'auth' | 'budget' | 'rate_limit' | 'bad_output' | 'unknown' {
-  switch (code) {
-    case 'authentication_failed':
-    case 'oauth_org_not_allowed':
-      return 'auth';
-    case 'billing_error':
-      return 'budget';
-    case 'rate_limit':
-    case 'overloaded':
-      return 'rate_limit';
-    case 'max_output_tokens':
-      return 'bad_output';
-    default:
-      return 'unknown';
-  }
-}
-
 /** Friendly tool label: mcp__calendar__list_events → "calendar · list_events". */
 export function toolLabel(name: string): string {
   const parts = name.split('__');
@@ -473,187 +432,69 @@ export function toolLabel(name: string): string {
   return name;
 }
 
-export function textFromContent(content: unknown): string {
-  if (!Array.isArray(content)) return '';
-  const out: string[] = [];
-  for (const block of content) {
-    const b = block as { type?: string; text?: unknown };
-    if (b?.type === 'text' && typeof b.text === 'string') out.push(b.text);
-  }
-  return out.join('');
-}
-
+/**
+ * One chat turn, through whichever harness is configured.
+ *
+ * This is now an event pump over `provider.run()`. It keeps its two hard-won behaviours:
+ * the abort hangs off `res` (see the route below), and a structural failure beats
+ * anything that happened to stream before it — the provider throws in that case, which
+ * is exactly the same ordering.
+ *
+ * Session choice is core's (planSession), tool access is core's (resolveToolAccess), and
+ * everything vendor-specific now lives behind the provider.
+ */
 async function runChatTurn(
   prompt: string,
-  resumeSessionId: string | null,
-  fork: boolean,
+  session: SessionPlan,
   emit: (e: StreamEvent) => void,
   abort: AbortController,
 ): Promise<TurnResult> {
-  // Our own timer is the only thing that means "timeout": the same AbortController is
-  // also tripped when the browser hangs up (Stop, panel closed, tab gone), and calling
-  // that a timeout would put the wrong sentence in front of the user.
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    abort.abort();
-  }, QUERY_TIMEOUT_MS);
+  const provider = activeHarness();
+  await ensureHarnessReady(provider);
+  const tools = resolveToolAccess(provider, 'chat');
 
   let sessionId: string | null = null;
-  let failure: string | null = null;
-  let hardFailure: { kind: 'auth' | 'budget' | 'rate_limit' | 'bad_output' | 'unknown'; detail: string } | null =
-    null;
-  let lastStderr = '';
-  let toolCalls = 0;
   const assistantChunks: string[] = [];
   let resultText: string | null = null;
-  const toolNames = new Map<string, string>();
-
-  const canUseTool: CanUseTool = async (toolName) => {
-    if (!isToolAllowed(toolName)) {
-      return {
-        behavior: 'deny',
-        message:
-          'This chat is read-only: it cannot create, send or modify anything (including Slack messages). Propose a draft instead — the user sends it.',
-      };
-    }
-    toolCalls += 1;
-    if (toolCalls > MAX_TOOL_CALLS) {
-      return {
-        behavior: 'deny',
-        message: `Tool budget of ${MAX_TOOL_CALLS} lookups is spent for this turn — answer from what you have.`,
-      };
-    }
-    return { behavior: 'allow' };
-  };
-
-  const preToolUseGuard: HookCallback = async (input) => {
-    if (input.hook_event_name === 'PreToolUse' && !isToolAllowed(input.tool_name)) {
-      return {
-        hookSpecificOutput: {
-          hookEventName: 'PreToolUse',
-          permissionDecision: 'deny',
-          permissionDecisionReason:
-            'Chat sessions are read-only; only non-mutating MCP tools are allowed. Slack posting is not a tool.',
-        },
-      };
-    }
-    return {};
-  };
-
-  const options: Options = {
-    cwd: projectRoot,
-    abortController: abort,
-    maxTurns: MAX_TURNS,
-    systemPrompt: SYSTEM_PROMPT,
-    settingSources: ['user'],
-    tools: [], // no built-in tools at all
-    disallowedTools: DISALLOWED_BUILTIN_TOOLS,
-    permissionMode: 'default',
-    canUseTool,
-    hooks: { PreToolUse: [{ hooks: [preToolUseGuard] }] },
-    persistSession: true, // the next turn (and the next app run) resumes this id
-    includePartialMessages: true, // token-wise streaming for the panel
-    env: sanitizedEnv(),
-    stderr: (data: string) => {
-      const line = data.trim();
-      if (line !== '') lastStderr = line.slice(0, 300);
-    },
-  };
-  if (resumeSessionId !== null) {
-    options.resume = resumeSessionId;
-    // Forking leaves the analyzer's own transcript untouched and hands us a session id
-    // that is ours to keep appending to.
-    if (fork) options.forkSession = true;
-  }
+  let stderrTail = '';
 
   try {
-    for await (const message of query({ prompt, options })) {
-      if (message.type === 'system' && message.subtype === 'init') {
-        sessionId = message.session_id;
-        emit({ type: 'session', sessionId, resumed: resumeSessionId !== null });
-      } else if (message.type === 'stream_event') {
-        const ev = message.event as {
-          type?: string;
-          delta?: { type?: string; text?: string };
-        };
-        if (
-          ev?.type === 'content_block_delta' &&
-          ev.delta?.type === 'text_delta' &&
-          typeof ev.delta.text === 'string' &&
-          ev.delta.text !== ''
-        ) {
-          emit({ type: 'delta', text: ev.delta.text });
-        }
-      } else if (message.type === 'assistant') {
-        const content = (message.message as { content?: unknown }).content;
-        const text = textFromContent(content);
-        if (typeof message.error === 'string') {
-          // Plumbing failure wearing an assistant message's clothes: keep the text as the
-          // technical detail, never as something to show as Claude's answer.
-          hardFailure = {
-            kind: kindOfAssistantError(message.error),
-            detail: `${message.error}${text !== '' ? `: ${text}` : ''}`.slice(0, 300),
-          };
-        } else if (text !== '') {
-          assistantChunks.push(text);
-        }
-        if (Array.isArray(content)) {
-          for (const block of content) {
-            const b = block as { type?: string; name?: unknown; id?: unknown };
-            if (b?.type === 'tool_use' && typeof b.name === 'string') {
-              if (typeof b.id === 'string') toolNames.set(b.id, b.name);
-              emit({ type: 'tool', name: toolLabel(b.name), phase: 'start' });
-            }
-          }
-        }
-      } else if (message.type === 'user') {
-        const content = (message.message as { content?: unknown }).content;
-        if (Array.isArray(content)) {
-          for (const block of content) {
-            const b = block as { type?: string; tool_use_id?: unknown; is_error?: unknown };
-            if (b?.type === 'tool_result') {
-              const name =
-                typeof b.tool_use_id === 'string' ? (toolNames.get(b.tool_use_id) ?? '') : '';
-              emit({
-                type: 'tool',
-                name: name === '' ? 'tool' : toolLabel(name),
-                phase: 'end',
-                ok: b.is_error !== true,
-              });
-            }
-          }
-        }
-      } else if (message.type === 'result') {
-        sessionId = sessionId ?? message.session_id;
-        if (message.subtype === 'success' && !message.is_error) {
-          resultText = message.result;
-        } else if (message.subtype === 'success') {
-          // is_error on a "success" result: the CLI answered, but with its own failure
-          // text (auth, billing, ...). Keep that text — health.ts classifies from it.
-          failure = String(message.result ?? 'model result flagged as error').slice(0, 300);
-        } else {
-          const detail = message.errors.length > 0 ? `: ${message.errors.join('; ')}` : '';
-          failure = `${message.subtype}${detail}`.slice(0, 300);
-        }
+    for await (const event of provider.run({
+      purpose: 'chat',
+      systemPrompt: SYSTEM_PROMPT,
+      prompt,
+      session,
+      tools,
+      maxTurns: MAX_TURNS,
+      timeoutMs: QUERY_TIMEOUT_MS,
+      abort: abort.signal,
+      env: sanitizedEnv(),
+      cwd: projectRoot,
+      model: harnessModel(),
+    })) {
+      if (event.type === 'session') {
+        sessionId = event.id;
+        emit({ type: 'session', sessionId, resumed: session.id !== null });
+      } else if (event.type === 'text') {
+        emit({ type: 'delta', text: event.delta });
+      } else if (event.type === 'message') {
+        assistantChunks.push(event.text);
+      } else if (event.type === 'tool') {
+        emit({
+          type: 'tool',
+          name: event.name === '' ? 'tool' : toolLabel(event.name),
+          phase: event.phase,
+          ok: event.ok,
+        });
+      } else {
+        resultText = event.text;
+        stderrTail = event.stderrTail ?? '';
       }
     }
   } catch (err) {
-    failure = timedOut
-      ? `timed out after ${QUERY_TIMEOUT_MS / 1000}s`
-      : abort.signal.aborted
-        ? 'stopped by the user'
-        : err instanceof Error
-          ? err.message
-          : String(err);
-  } finally {
-    clearTimeout(timer);
-  }
-
-  // A structural failure wins over anything that happened to be streamed before it —
-  // otherwise "Failed to authenticate: ..." renders as a perfectly normal Claude reply.
-  if (hardFailure !== null) {
-    throw new ClassifiedError(hardFailure.kind, hardFailure.detail);
+    // "Someone hung up" is not a failure to report — the route keeps that distinction.
+    if (err instanceof HarnessAbortedError) throw new StoppedError(err.message);
+    throw err;
   }
 
   // The streamed assistant blocks are the authoritative text; result is the fallback.
@@ -661,12 +502,8 @@ async function runChatTurn(
   const text = assembled !== '' ? assembled : (resultText ?? '').trim();
 
   if (text === '') {
-    if (failure === null && timedOut) failure = `timed out after ${QUERY_TIMEOUT_MS / 1000}s`;
-    const stderrNote = lastStderr !== '' ? ` [stderr: ${lastStderr}]` : '';
-    const detail = `${failure ?? 'stream ended without a reply'}${stderrNote}`;
-    if (timedOut) throw new ClassifiedError('timeout', detail);
-    if (abort.signal.aborted) throw new StoppedError(detail);
-    throw new Error(detail);
+    const stderrNote = stderrTail !== '' ? ` [stderr: ${stderrTail}]` : '';
+    throw new Error(`stream ended without a reply${stderrNote}`);
   }
   return { sessionId, text: text.slice(0, MAX_STORED_ASSISTANT) };
 }
@@ -754,6 +591,7 @@ export function registerChatRoutes(app: Express): void {
         return;
       }
       const session = getChatSession(id);
+      const analyzerSessionId = getAnalysisForThread(id)?.session_id ?? null;
       res.json({
         thread_id: id,
         destination: destinationFor(thread),
@@ -761,7 +599,17 @@ export function registerChatRoutes(app: Express): void {
           ? { id: session.session_id, updated_at: session.updated_at }
           : { id: null, updated_at: null },
         /** true when the analyzer left a session we can pick up on the first turn. */
-        seedable: (getAnalysisForThread(id)?.session_id ?? null) !== null,
+        seedable: analyzerSessionId !== null,
+        /**
+         * What the next turn will actually do, given what this harness can do:
+         * 'resume' our own session, 'fork' the analyzer's, or 'seed' from scratch. The
+         * panel can then say "it already has this thread" only when that is true.
+         */
+        session_mode: planSession(
+          activeHarness(),
+          session?.session_id ?? null,
+          analyzerSessionId,
+        ).mode,
         busy: inFlight.has(id),
         messages: serializeHistory(chatHistory(id)),
         total: chatMessageCount(id),
@@ -862,9 +710,16 @@ export function registerChatRoutes(app: Express): void {
 
       const stored = getChatSession(id);
       const analyzerSessionId = getAnalysisForThread(id)?.session_id ?? null;
-      const ourSession = stored?.session_id ?? null;
-      const resumeId = ourSession ?? analyzerSessionId;
-      const fork = ourSession === null && analyzerSessionId !== null;
+      const provider = activeHarness();
+      /*
+       * Resume our own session when the harness can; otherwise fork the analyzer's (so
+       * the chat starts already knowing the thread and its verdict, and the analyzer's
+       * transcript is left alone); otherwise seed the first prompt with the transcript
+       * and the analysis. A harness that cannot fork deliberately SEEDS rather than
+       * resuming the analyzer's session: appending chat turns there would poison the
+       * seed every future fresh chat starts from.
+       */
+      const plan = planSession(provider, stored?.session_id ?? null, analyzerSessionId);
 
       const resumePrompt = buildResumePrompt(
         messagesAfter(messages, stored?.covered_ts ?? null),
@@ -877,9 +732,8 @@ export function registerChatRoutes(app: Express): void {
         let outcome: TurnResult;
         try {
           outcome = await runChatTurn(
-            resumeId !== null ? resumePrompt : seedPrompt,
-            resumeId,
-            fork,
+            plan.mode === 'seed' ? seedPrompt : resumePrompt,
+            plan,
             send,
             abort,
           );
@@ -888,7 +742,7 @@ export function registerChatRoutes(app: Express): void {
           // A dead login, a spent budget or a timeout would just fail again, slower.
           const kind = err instanceof ClassifiedError ? err.kind : null;
           const worthRetrying =
-            resumeId !== null &&
+            plan.id !== null &&
             !abort.signal.aborted &&
             kind !== 'auth' &&
             kind !== 'budget' &&
@@ -903,10 +757,11 @@ export function registerChatRoutes(app: Express): void {
             type: 'error',
             kind: 'resume',
             message: 'Starting a fresh conversation for this message.',
-            hint: 'The earlier session could not be reopened, so Claude is being re-briefed on the thread.',
+            hint: `The earlier session could not be reopened, so ${provider.identity.shortLabel} is being re-briefed on the thread.`,
             detail: '',
+            command: null,
           });
-          outcome = await runChatTurn(seedPrompt, null, false, send, abort);
+          outcome = await runChatTurn(seedPrompt, { mode: 'seed', id: null }, send, abort);
         }
 
         saveChatSession(id, outcome.sessionId, latestTs);
@@ -938,6 +793,8 @@ export function registerChatRoutes(app: Express): void {
             message: failure.message,
             hint: failure.hint,
             detail: failure.detail,
+            // The harness's own fix command travels with the error; the panel renders it.
+            command: failure.command,
           });
         }
       } finally {

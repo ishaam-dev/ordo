@@ -13,9 +13,23 @@
  *   reach this registry: everything here is served over the API and rendered in a
  *   browser page.
  * - Every user-facing string here is written for a non-technical reader.
+ *
+ * HARNESS SPLIT (docs/harness-providers.md §3): the failure *buckets* and the plain-English
+ * copy are harness-independent and live here (and in src/harness/copy.ts). Deciding which
+ * bucket a given error text belongs to is harness-SPECIFIC — those patterns moved into the
+ * provider, because "Failed to authenticate: OAuth session expired" is Claude's wording,
+ * not ours. `bad_output` stays here: it describes our own JSON contract.
  */
 
 import { workspaces } from './config.js';
+import { copyFor } from './harness/copy.js';
+import { activeHarness } from './harness/index.js';
+import {
+  ClassifiedError,
+  HarnessUnavailableError,
+  type FailureKind,
+  type HarnessProvider,
+} from './harness/types.js';
 
 // ---------------------------------------------------------------------------
 // analyzer
@@ -26,14 +40,18 @@ export type AnalyzerState = 'idle' | 'analyzing' | 'disabled' | 'error';
 /**
  * Failure buckets. `message`/`hint` are shown verbatim to a non-technical user, so
  * they must stay jargon-free (no "OAuth", "daemon", "SDK", "token", "stderr").
+ *
+ * The union itself is the UI contract and now lives in src/harness/types.ts (as
+ * `FailureKind`) so that providers can classify into it without importing this module.
+ * Re-exported under its old name so no call site had to change:
+ *   'auth'       not signed in to the harness on this machine
+ *   'timeout'    the run exceeded its wall-clock budget
+ *   'rate_limit' temporarily throttled; clears by itself
+ *   'budget'     plan/usage/credit cap reached
+ *   'bad_output' the model replied, but not with the JSON we require
+ *   'unknown'    anything we could not place
  */
-export type AnalyzerErrorKind =
-  | 'auth' // not signed in to Claude on this machine
-  | 'timeout' // the run exceeded its wall-clock budget
-  | 'rate_limit' // temporarily throttled; clears by itself
-  | 'budget' // plan/usage/credit cap reached
-  | 'bad_output' // Claude replied, but not with the JSON we require
-  | 'unknown'; // anything we could not place
+export type AnalyzerErrorKind = FailureKind;
 
 export interface AnalyzerFailure {
   kind: AnalyzerErrorKind;
@@ -51,6 +69,11 @@ export interface AnalyzerFailure {
 
 export interface AnalyzerHealth {
   state: AnalyzerState;
+  /**
+   * Why the analyzer is off, when it is off for a reason the user can act on — today
+   * only the per-token spend guard (docs/harness-providers.md §6). null otherwise.
+   */
+  note: string | null;
   /** Threads waiting for a first or refreshed analysis. */
   queued: number;
   /** ISO time of the last successful analysis, or null if none this run. */
@@ -65,6 +88,7 @@ export interface AnalyzerHealth {
 
 const analyzer: AnalyzerHealth = {
   state: 'idle',
+  note: null,
   queued: 0,
   lastOk: null,
   lastError: null,
@@ -76,6 +100,7 @@ const analyzer: AnalyzerHealth = {
 export function analyzerHealth(): AnalyzerHealth {
   return {
     state: analyzer.state,
+    note: analyzer.note,
     queued: analyzer.queued,
     lastOk: analyzer.lastOk,
     lastError: analyzer.lastError === null ? null : { ...analyzer.lastError },
@@ -84,8 +109,9 @@ export function analyzerHealth(): AnalyzerHealth {
   };
 }
 
-export function setAnalyzerDisabled(): void {
+export function setAnalyzerDisabled(note: string | null = null): void {
   analyzer.state = 'disabled';
+  analyzer.note = note;
   analyzer.currentThreadId = null;
 }
 
@@ -120,95 +146,72 @@ export function analyzerRunFailed(failure: AnalyzerFailure): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Thrown by the analyzer when it already knows the bucket (parse failures, timeouts).
- * Structural classification beats string matching, so prefer this where we control
- * the throw site.
+ * Thrown wherever we already know the bucket (parse failures, timeouts). Structural
+ * classification beats string matching, so prefer this where we control the throw site.
+ * Defined in src/harness/types.ts — where providers can throw it without importing this
+ * module — and re-exported here so every existing call site is unchanged.
  */
-export class ClassifiedError extends Error {
-  readonly kind: AnalyzerErrorKind;
-  constructor(kind: AnalyzerErrorKind, message: string) {
-    super(message);
-    this.name = 'ClassifiedError';
-    this.kind = kind;
-  }
-}
+export { ClassifiedError } from './harness/types.js';
 
 /**
- * TEXT MATCHING — MAINTENANCE NOTE.
+ * `bad_output` is the one bucket that stays here: it describes OUR contract ("the model
+ * answered, we could not read it"), matches the messages src/harness/json.ts throws, and
+ * must mean the same thing for every harness. Every other pattern is the harness's own
+ * wording and lives in its provider — see src/harness/claude-code.ts for the Claude table,
+ * including the live example "Failed to authenticate: OAuth session expired and could not
+ * be refreshed".
  *
- * For failures that originate inside @anthropic-ai/claude-agent-sdk (or the CLI it
- * spawns) we only get a human-readable string, so these buckets are decided by
- * matching that string case-insensitively. The SDK can reword its errors at any
- * time; if a real failure starts showing up as "unknown" in /api/status, the fix is
- * to add the new wording here.
- *
- * Today's live example this must catch (verbatim from the SDK on a machine with no
- * Claude login): "Failed to authenticate: OAuth session expired and could not be
- * refreshed".
+ * Order of precedence is preserved exactly: the provider's patterns are tried first, and
+ * bad_output only claims what would otherwise have fallen through to `unknown`.
  */
-const AUTH_RE = /\bauth\w*|oauth|not logged in|logged out|log in|login|sign(?:ed)? in|unauthorized|401|credential/i;
-const BUDGET_RE = /usage limit|quota|credit balance|out of credits|insufficient|billing|upgrade your plan|budget exceeded/i;
-const RATE_RE = /rate.?limit|too many requests|\b429\b|overloaded|\b529\b|try again later/i;
-const TIMEOUT_RE = /timed? ?out|timeout|etimedout|deadline exceeded|aborted/i;
 const BAD_OUTPUT_RE = /json|urgency is not one of|no JSON object|unbalanced|max_turns|max turns/i;
 
-const COPY: Record<AnalyzerErrorKind, { message: string; hint: string; command: string | null }> = {
-  auth: {
-    message: "Claude isn't signed in on this Mac",
-    hint: 'Open Terminal and run: claude auth login',
-    command: 'claude auth login',
-  },
-  timeout: {
-    message: 'Claude took too long to review a message',
-    hint: 'It will try again on its own in a few minutes. If every message stalls, quit and reopen the app.',
-    command: null,
-  },
-  rate_limit: {
-    message: 'Claude is temporarily busy and asked us to slow down',
-    hint: 'This usually clears by itself within a few minutes. Nothing for you to do.',
-    command: null,
-  },
-  budget: {
-    message: "Claude's usage limit for this plan has been reached",
-    hint: 'Prioritizing starts again when the limit resets, or on a higher Claude plan.',
-    command: null,
-  },
-  bad_output: {
-    message: "Claude's answer came back in a form this app could not read",
-    hint: 'Usually a one-off. It retries in a few minutes, or press Re-analyze on the message.',
-    command: null,
-  },
-  unknown: {
-    message: "Claude couldn't review this message",
-    hint: 'It will try again in a few minutes. If it keeps happening, quit and reopen the app.',
-    command: null,
-  },
-};
-
-function kindFromText(text: string): AnalyzerErrorKind {
-  // Order matters: an auth failure is the one a user must fix by hand, so it wins.
-  if (AUTH_RE.test(text)) return 'auth';
-  if (BUDGET_RE.test(text)) return 'budget';
-  if (RATE_RE.test(text)) return 'rate_limit';
-  if (TIMEOUT_RE.test(text)) return 'timeout';
-  if (BAD_OUTPUT_RE.test(text)) return 'bad_output';
-  return 'unknown';
-}
-
-/** Build the user-facing failure record from whatever the analyzer threw. */
-export function classifyAnalyzerError(err: unknown): AnalyzerFailure {
+/**
+ * Build the user-facing failure record from whatever the analyzer or chat threw.
+ *
+ * The provider decides the bucket and the fix command; src/harness/copy.ts writes the
+ * plain-English sentence around them, so a Codex user is never told to run
+ * `claude auth login`. With the default harness every string is byte-identical to the
+ * table this function used to hold.
+ */
+export function classifyAnalyzerError(
+  err: unknown,
+  provider: HarnessProvider = activeHarness(),
+): AnalyzerFailure {
   const raw = err instanceof Error ? err.message : String(err);
-  const kind = err instanceof ClassifiedError ? err.kind : kindFromText(raw);
-  const copy = COPY[kind];
+  const at = new Date().toISOString();
+  const name = provider.identity.shortLabel;
+
+  // "This harness cannot run at all" carries its own message and its own fix command.
+  if (err instanceof HarnessUnavailableError) {
+    const command = err.availability.command ?? null;
+    const copy = copyFor('auth', { name, command });
+    return {
+      kind: 'auth',
+      message: err.availability.message ?? copy.message,
+      hint: err.availability.hint ?? copy.hint,
+      command,
+      at,
+      detail: raw.slice(0, 300),
+    };
+  }
+
+  const failure = provider.classifyError(err);
+  // A declared kind always wins; text matching is only for what the provider could not place.
+  const kind: AnalyzerErrorKind =
+    failure.kind === 'unknown' && !(err instanceof ClassifiedError) && BAD_OUTPUT_RE.test(raw)
+      ? 'bad_output'
+      : failure.kind;
+  const copy = copyFor(kind, { name, command: failure.command });
   return {
     kind,
-    message: copy.message,
-    hint: copy.hint,
-    command: copy.command,
-    at: new Date().toISOString(),
+    message: failure.message ?? copy.message,
+    hint: failure.hint ?? copy.hint,
+    command: failure.command,
+    at,
     // Technical text only — the analyzer never puts Slack transcript content into
     // its error messages (see src/analyzer.ts), so this is safe to surface.
-    detail: raw.slice(0, 300),
+    detail: failure.detail.slice(0, 300),
   };
 }
 

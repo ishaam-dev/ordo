@@ -1224,8 +1224,12 @@ let bannerSig = null;
 function renderBanner() {
   const e = analyzerErr();
   const on = !!(e && e.kind === 'auth');
-  const cmd = on ? String(e.command || 'claude auth login') : '';
-  const sig = on ? 'auth:' + cmd : 'off';
+  // The command and the headline come from the server, which knows which AI harness is
+  // configured. Hard-coding Claude's here told a Codex user to sign in to the wrong
+  // product; render what we are given, and drop the command row when there is none.
+  const cmd = on ? String(e.command || '') : '';
+  const title = on ? String(e.message || '') : '';
+  const sig = on ? 'auth:' + cmd + '|' + title : 'off';
   if (bannerSig === sig) return;
   bannerSig = sig;
 
@@ -1238,21 +1242,24 @@ function renderBanner() {
 
   const icon = el('div', 'sbicon', '●');
   const main = el('div', 'sbmain');
-  main.appendChild(el('div', 'sbtitle', "Claude isn't signed in — items can't be prioritized yet."));
+  main.appendChild(el('div', 'sbtitle',
+    (title || "Claude isn't signed in") + " — items can't be prioritized yet."));
   main.appendChild(el('div', 'sbsub',
-    'Your Slack messages are still arriving and nothing is lost. Until Claude is signed in on this Mac, ' +
+    'Your Slack messages are still arriving and nothing is lost. Until this is fixed, ' +
     'no message gets an urgency rating or a summary.'));
 
-  const row = el('div', 'cmdrow');
-  row.appendChild(el('span', 'lead', 'Open Terminal and run:'));
-  const cmdNode = el('code', 'cmd', cmd);
-  cmdNode.title = 'click to select, then copy';
-  row.appendChild(cmdNode);
-  const copy = el('button', 'copybtn', 'Copy');
-  copy.title = 'copy this command';
-  copy.addEventListener('click', () => copyCommand(cmd, copy, cmdNode));
-  row.appendChild(copy);
-  main.appendChild(row);
+  if (cmd) {
+    const row = el('div', 'cmdrow');
+    row.appendChild(el('span', 'lead', 'Open Terminal and run:'));
+    const cmdNode = el('code', 'cmd', cmd);
+    cmdNode.title = 'click to select, then copy';
+    row.appendChild(cmdNode);
+    const copy = el('button', 'copybtn', 'Copy');
+    copy.title = 'copy this command';
+    copy.addEventListener('click', () => copyCommand(cmd, copy, cmdNode));
+    row.appendChild(copy);
+    main.appendChild(row);
+  }
 
   main.appendChild(el('div', 'sbsub',
     'Then come back here — prioritizing starts again on its own within a few minutes, ' +

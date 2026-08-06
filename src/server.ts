@@ -13,6 +13,7 @@ import {
 } from './db.js';
 import { requestReanalysis } from './analyzer.js';
 import { registerChatRoutes } from './chat.js';
+import { harnessReadiness, harnessStatus } from './harness/index.js';
 import { analyzerHealth, listWorkspaceHealth } from './health.js';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -134,8 +135,13 @@ export function startServer(port: number): Promise<void> {
    */
   app.get('/api/status', (_req, res) => {
     try {
+      // Which AI harness is running, whether it is usable, and what it cannot do. The
+      // reading is cached; a stale one is refreshed in the background so this route
+      // never waits on a subprocess.
+      void harnessReadiness().catch(() => undefined);
       res.json({
         analyzer: analyzerHealth(),
+        harness: harnessStatus(),
         server: { startedAt: STARTED_AT, version: APP_VERSION, now: new Date().toISOString() },
         workspaces: listWorkspaceHealth(),
       });

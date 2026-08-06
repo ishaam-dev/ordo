@@ -8,6 +8,7 @@
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
+    "harness:probe": "tsx src/harness/probe-cli.ts",
     "test": "node --import tsx --test 'test/**/*.test.ts'",
     "test:watch": "node --import tsx --test --watch 'test/**/*.test.ts'",
     "app:icons": "node scripts/make-icons.mjs",
