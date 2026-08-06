@@ -49,8 +49,22 @@ export function isToolAllowed(toolName: string): boolean {
 // per-purpose wording — kept verbatim from the two call sites it replaces
 // ---------------------------------------------------------------------------
 
-/** Read-only MCP lookup budget per run. */
-export const MAX_TOOL_CALLS = { analysis: 5, chat: 8 } as const;
+/**
+ * Read-only MCP lookup budget per run.
+ *
+ * This is a backstop, not a discouragement: the analysis prompt tells the model to use
+ * tools as needed and leaves the choice of tool to it, so the number only has to be high
+ * enough that a genuinely thorough triage never hits it, and low enough that a confused
+ * run cannot spend twenty lookups going in circles. Ten fits a thread that warrants
+ * checking a calendar, a couple of mail threads, a task and a meeting note, and still
+ * lands inside the analyzer's 3-minute wall.
+ *
+ * COUPLED CONSTANT: the run's `maxTurns` must stay above this — a tool call costs a turn,
+ * and running out of turns is a hard failure ("stream ended without a result", retried in
+ * five minutes) whereas running out of budget is graceful (the gate's refusal tells the
+ * model to produce its verdict now). Both call sites keep turns = budget + 4.
+ */
+export const MAX_TOOL_CALLS = { analysis: 10, chat: 8 } as const;
 
 const WORDING = {
   analysis: {
