@@ -10,9 +10,12 @@
  *
  * Notification rules, in order of importance:
  *   - only P0 and P1, never P2/P3
- *   - only threads that are still marked "new"
+ *   - only threads that are still marked "new" (messages caught up from before the app
+ *     started watching are stored as already-read, so a bulk import cannot notify at all —
+ *     see the WATCH-START RULE in src/db.ts)
  *   - each thread at most once, ever (remembered across restarts)
- *   - nothing at all on the very first run, so installing the app is silent
+ *   - nothing at all on the very first run: every conversation that already exists is
+ *     adopted silently, whether or not Claude has rated it yet
  *   - at most 3 at a time; beyond that, one "N urgent items" summary
  */
 const { EventEmitter } = require('node:events');
@@ -87,6 +90,26 @@ class FeedWatcher extends EventEmitter {
     return { items: Array.isArray(data) ? data : [] };
   }
 
+  /**
+   * What the server itself says about each Slack workspace. This is first-hand and always
+   * available, unlike guessing from the server's log lines — which only works when this app
+   * started that server, and tells us nothing when it attached to one already running.
+   * Never fatal: no answer just means the menu falls back to what it knew before.
+   */
+  async fetchStatus(token) {
+    try {
+      const res = await fetch(baseUrl() + '/api/status', {
+        signal: AbortSignal.timeout(6000),
+        headers: { 'x-copilot-token': token, accept: 'application/json' },
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data && typeof data === 'object' ? data : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   async poll() {
     if (this.paused || this.polling) return;
     this.polling = true;
@@ -101,6 +124,8 @@ class FeedWatcher extends EventEmitter {
       }
       this.lastOkAt = Date.now();
       this.onFeed(result.items);
+      const status = await this.fetchStatus(this.token);
+      if (status) this.emit('status', status);
       this.emit('ok');
     } catch (err) {
       this.token = null;
@@ -119,11 +144,20 @@ class FeedWatcher extends EventEmitter {
     }
 
     if (!this.seeded) {
-      // First ever run: adopt whatever is already there without making a sound.
-      for (const item of urgent) this.notified.add(item.id);
+      /*
+       * First ever run: adopt everything already in the feed without making a sound —
+       * every conversation, not only the ones already rated urgent.
+       *
+       * Adopting only the urgent ones used to leave a trap: on a first run Claude has not
+       * rated anything yet, so nothing was adopted, and ten minutes later the whole
+       * caught-up backlog turned P0/P1 at once and fired a wave of notifications about
+       * messages the user had read in Slack days earlier. A conversation that already
+       * existed before this app first looked is never news, whenever it gets its rating.
+       */
+      for (const item of items) this.notified.add(item.id);
       this.seeded = true;
       this.persist();
-      log(`first run: adopted ${urgent.length} existing urgent item(s) without notifying`);
+      log(`first run: adopted ${items.length} existing conversation(s) without notifying`);
       return;
     }
 

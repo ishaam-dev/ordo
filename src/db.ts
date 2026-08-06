@@ -98,6 +98,26 @@ db.exec(`
   END;
 `);
 
+/**
+ * Additive column adds only — never a rebuild. `ALTER TABLE ADD COLUMN` on a populated
+ * table is safe (SQLite only touches the schema; existing rows read the new column as
+ * NULL), but it is not idempotent, so it is guarded by the current column list.
+ */
+function addColumnIfMissing(table: string, column: string, definition: string): void {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: unknown }>;
+  if (cols.some((c) => c.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  console.log(`[db] added column ${table}.${column}`);
+}
+
+/*
+ * A message deleted in Slack keeps its row — dropping it would leave a hole in the
+ * transcript and could empty a card entirely — and is stamped here instead. Its `text` is
+ * replaced with a plain "(deleted)" marker at the same time, so even a UI that knows
+ * nothing about this column stops showing words the sender has taken back.
+ */
+addColumnIfMissing('messages', 'deleted_at', 'TEXT');
+
 // ---------- row shapes ----------
 
 export interface ThreadRow {
@@ -121,6 +141,8 @@ export interface MessageRow {
   author_name: string | null;
   text: string | null;
   raw: string | null;
+  /** ISO time we saw Slack delete this message; null for every normal message. */
+  deleted_at?: string | null;
 }
 
 export interface AnalysisRow {
@@ -201,8 +223,31 @@ const stmtInsertMessage = db.prepare(
    VALUES (?, ?, ?, ?, ?, ?)`,
 );
 
+const stmtSeenIfNew = db.prepare("UPDATE threads SET status = 'seen' WHERE id = ? AND status = 'new'");
+
 const stmtUpdateChannelName = db.prepare('UPDATE threads SET channel_name = ? WHERE id = ?');
 const stmtUpdatePermalink = db.prepare('UPDATE threads SET permalink = ? WHERE id = ?');
+
+/*
+ * Edits and deletions arrive keyed on (channel, message ts) — Slack does not tell us which
+ * of our threads the message ended up in, and a reply lives under its parent's thread row.
+ * Both statements therefore find the message through its thread, which is correct whichever
+ * way the message was keyed when we stored it.
+ */
+const stmtFindMessageByChannelTs = db.prepare(
+  `SELECT m.id AS id, m.thread_id AS thread_id, m.deleted_at AS deleted_at
+     FROM messages m JOIN threads t ON t.id = m.thread_id
+    WHERE t.workspace = ? AND t.channel_id = ? AND m.ts = ?`,
+);
+const stmtUpdateMessageText = db.prepare(
+  'UPDATE messages SET text = ?, raw = ? WHERE id = ?',
+);
+const stmtMarkMessageDeleted = db.prepare(
+  "UPDATE messages SET text = '(deleted)', deleted_at = ? WHERE id = ?",
+);
+const stmtStaleAnalysis = db.prepare(
+  'UPDATE analyses SET covered_through_ts = NULL WHERE thread_id = ?',
+);
 
 const stmtFeed = db.prepare(
   `SELECT
@@ -290,6 +335,16 @@ export function touchThreadActivity(threadId: number, ts: string): void {
 }
 
 /**
+ * Demote a freshly-created thread to 'seen' — used by the catch-up sweep when everything
+ * it found there is older than the moment we started watching (see WATCH-START RULE
+ * below). Only ever touches a 'new' row, so a thread the user has already read or
+ * finished with is never dragged backwards.
+ */
+export function markThreadSeenIfNew(threadId: number): boolean {
+  return stmtSeenIfNew.run(threadId).changes > 0;
+}
+
+/**
  * Store a message. Returns false when we already had it — Socket Mode can redeliver an
  * unacked event and the catch-up sweep re-reads windows on purpose, and neither of those
  * should re-open a thread the user already dealt with.
@@ -321,6 +376,77 @@ export function setThreadChannelName(threadId: number, channelName: string): voi
 /** Fill in a permalink we could not resolve when the thread was first seen. */
 export function setThreadPermalink(threadId: number, permalink: string): void {
   stmtUpdatePermalink.run(permalink, threadId);
+}
+
+// ---------- edits and deletions made in Slack ----------
+
+/**
+ * Outcome of applying an edit or a deletion.
+ *   null              — we never stored that message; it is not ours to correct.
+ *   { changed:false } — we have it, but there was nothing left to do (already deleted).
+ *   { changed:true }  — the stored transcript changed, so the analysis is now out of date.
+ */
+export type MessageMutation = { threadId: number; changed: boolean } | null;
+
+function findStoredMessage(
+  workspace: string,
+  channelId: string,
+  ts: string,
+): { id: number; thread_id: number; deleted_at: string | null } | undefined {
+  return stmtFindMessageByChannelTs.get(workspace, channelId, ts) as
+    | { id: number; thread_id: number; deleted_at: string | null }
+    | undefined;
+}
+
+/**
+ * Someone edited a message in Slack. Rewrites the stored text so a card can never show
+ * wording the sender has already changed.
+ *
+ * Deliberately does NOT touch the thread's status or last_activity: an edit is not new
+ * activity, and re-opening a conversation the user has already finished with because
+ * somebody fixed a typo would be worse than the stale text this fixes.
+ */
+export function updateMessageText(m: {
+  workspace: string;
+  channelId: string;
+  ts: string;
+  text: string | null;
+  raw: string | null;
+}): MessageMutation {
+  const row = findStoredMessage(m.workspace, m.channelId, m.ts);
+  if (row === undefined) return null;
+  // A deleted message stays deleted; Slack can still emit an edit for one in odd orders.
+  if (row.deleted_at !== null) return { threadId: row.thread_id, changed: false };
+  stmtUpdateMessageText.run(m.text, m.raw, row.id);
+  return { threadId: row.thread_id, changed: true };
+}
+
+/**
+ * Someone deleted a message in Slack. The row survives (removing it would punch a hole in
+ * the transcript, and could leave a card with nothing to show) but its text becomes
+ * "(deleted)" and `deleted_at` is stamped. Status and last_activity are left alone, as for
+ * an edit.
+ */
+export function markMessageDeleted(m: {
+  workspace: string;
+  channelId: string;
+  ts: string;
+}): MessageMutation {
+  const row = findStoredMessage(m.workspace, m.channelId, m.ts);
+  if (row === undefined) return null;
+  if (row.deleted_at !== null) return { threadId: row.thread_id, changed: false };
+  stmtMarkMessageDeleted.run(new Date().toISOString(), row.id);
+  return { threadId: row.thread_id, changed: true };
+}
+
+/**
+ * Force a re-analysis: the transcript underneath an existing analysis changed, so what
+ * Claude concluded is about text that no longer exists. Clearing covered_through_ts is
+ * what listThreadsNeedingAnalysis() looks for, and it leaves the old urgency/why visible
+ * (marked stale in the UI) until the fresh answer lands, rather than blanking the card.
+ */
+export function markAnalysisStale(threadId: number): void {
+  stmtStaleAnalysis.run(threadId);
 }
 
 export function getFeed(): FeedItem[] {
@@ -446,6 +572,160 @@ export function listRecentMentionThreads(
     channel_id: string;
     thread_ts: string;
   }>;
+}
+
+// ---------- WATCH-START RULE: what counts as "already read in Slack" ----------
+
+/**
+ * The problem this solves: the catch-up sweep imports up to three days of DMs and mentions
+ * the first time it runs, and every one of them used to land as unread. Opening the app for
+ * the first time therefore looked like sixteen emergencies — all of them things the user had
+ * already read in Slack days earlier. Trusting that feed is impossible, and a badge that
+ * counts old news is a badge you learn to ignore.
+ *
+ * The rule:
+ *
+ *   Each workspace records, once and forever, the moment we first successfully connected
+ *   to it — its "watch start". A message the catch-up sweep imports that is OLDER than that
+ *   moment is history: it is stored in full, but the conversation it belongs to is not
+ *   marked unread. Everything else — every live message, and anything the sweep finds that
+ *   arrived after we started watching (e.g. while the laptop was asleep) — is unread as
+ *   before.
+ *
+ * "Unread" therefore means what the user assumes it means: arrived since this app has been
+ * watching your Slack. The mark is set once per workspace and never moves, so a later
+ * reinstall or restart cannot silently re-classify history.
+ *
+ * Stored in `sync_state` under a reserved channel_id. Real Slack conversation ids are
+ * `C…`/`D…`/`G…`, so `__watch_start__` cannot collide with one, and nothing in the codebase
+ * enumerates that table — every read is by exact (workspace, channel_id).
+ */
+const WATCH_START_KEY = '__watch_start__';
+/** Reserved workspace name for rows that are about the app itself, not about a Slack team. */
+const META_WORKSPACE = '__meta__';
+/** One-time cleanup marker (see markPreWatchThreadsSeen). */
+const HISTORY_SEEN_KEY = '__history_seen_v1__';
+
+const stmtInsertReservedOnce = db.prepare(
+  `INSERT INTO sync_state (workspace, channel_id, last_ts, updated_at) VALUES (?, ?, ?, ?)
+   ON CONFLICT(workspace, channel_id) DO NOTHING`,
+);
+
+/** The recorded watch start for a workspace, in Slack ts seconds; null if never set. */
+export function getWatchStart(workspace: string): number | null {
+  const row = stmtGetSyncMark.get(workspace, WATCH_START_KEY) as
+    | { last_ts?: string | null }
+    | undefined;
+  const parsed = Number.parseFloat(row?.last_ts ?? '');
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
+ * Record "we started watching this workspace now", the first time only. Returns the
+ * effective watch start — the previously stored one if there was one, so a restart never
+ * moves it. Called from src/ingest.ts as soon as a workspace connects, before its first
+ * catch-up sweep can store anything.
+ */
+export function ensureWatchStart(workspace: string, nowSeconds: number): number {
+  stmtInsertReservedOnce.run(
+    workspace,
+    WATCH_START_KEY,
+    nowSeconds.toFixed(6),
+    new Date().toISOString(),
+  );
+  return getWatchStart(workspace) ?? nowSeconds;
+}
+
+/**
+ * One-time cleanup for databases that were filled in before the watch-start rule existed
+ * (i.e. the user's live one). Everything already in there arrived through the catch-up
+ * sweep and was read in Slack days ago, so anything still marked unread whose newest
+ * message predates this moment becomes 'seen'. Threads the user has already marked done,
+ * and anything that arrives afterwards, are untouched.
+ *
+ * Runs at most once ever — the marker row is inserted in the same transaction, so a second
+ * process (packaged app + dev server can run side by side) finds no work. A deliberate
+ * "mark unread" the user does later can therefore never be undone by this.
+ */
+export interface PreWatchSeenResult {
+  ran: boolean;
+  backupPath: string | null;
+  cutoff: number;
+  newBefore: number;
+  seenBefore: number;
+  doneBefore: number;
+  markedSeen: number;
+  newAfter: number;
+  seenAfter: number;
+  doneAfter: number;
+}
+
+export function markPreWatchThreadsSeen(nowSeconds: number = Date.now() / 1000): PreWatchSeenResult {
+  const countStatus = (s: string): number =>
+    Number(
+      (db.prepare('SELECT COUNT(*) AS n FROM threads WHERE status = ?').get(s) as { n?: number })
+        ?.n ?? 0,
+    );
+  const result: PreWatchSeenResult = {
+    ran: false,
+    backupPath: null,
+    cutoff: nowSeconds,
+    newBefore: countStatus('new'),
+    seenBefore: countStatus('seen'),
+    doneBefore: countStatus('done'),
+    markedSeen: 0,
+    newAfter: 0,
+    seenAfter: 0,
+    doneAfter: 0,
+  };
+  const finish = (): PreWatchSeenResult => {
+    result.newAfter = countStatus('new');
+    result.seenAfter = countStatus('seen');
+    result.doneAfter = countStatus('done');
+    return result;
+  };
+
+  // Already done (or nothing to do) — check before taking a backup.
+  if (getSyncMark(META_WORKSPACE, HISTORY_SEEN_KEY) !== null) return finish();
+  if (result.newBefore === 0) {
+    stmtInsertReservedOnce.run(
+      META_WORKSPACE,
+      HISTORY_SEEN_KEY,
+      nowSeconds.toFixed(6),
+      new Date().toISOString(),
+    );
+    return finish();
+  }
+
+  result.backupPath = backupDatabase();
+
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    // Re-check inside the write transaction: another instance may have just done it.
+    const claimed = stmtInsertReservedOnce.run(
+      META_WORKSPACE,
+      HISTORY_SEEN_KEY,
+      nowSeconds.toFixed(6),
+      new Date().toISOString(),
+    ).changes;
+    if (claimed > 0) {
+      result.markedSeen = Number(
+        db
+          .prepare(
+            `UPDATE threads SET status = 'seen'
+              WHERE status = 'new'
+                AND (last_activity IS NULL OR CAST(last_activity AS REAL) < CAST(? AS REAL))`,
+          )
+          .run(nowSeconds.toFixed(6)).changes,
+      );
+      result.ran = true;
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+  return finish();
 }
 
 // ---------- analyzer support (appended; used by src/analyzer.ts) ----------
@@ -697,4 +977,21 @@ try {
   }
 } catch (err) {
   console.warn(`[db] DM conversation migration skipped: ${(err as Error).message}`);
+}
+
+// One-time: everything already in an existing database came from the catch-up sweep before
+// the watch-start rule existed, so it is history, not sixteen emergencies. Same contract as
+// above — never fatal, and it can only ever run once per database.
+try {
+  const seenFix = markPreWatchThreadsSeen();
+  if (seenFix.ran) {
+    console.log(
+      `[db] first-run tidy-up: ${seenFix.markedSeen} conversation(s) that were already read ` +
+        `in Slack marked as read (unread ${seenFix.newBefore} → ${seenFix.newAfter}, ` +
+        `read ${seenFix.seenBefore} → ${seenFix.seenAfter}, done ${seenFix.doneBefore} → ` +
+        `${seenFix.doneAfter}); backup: ${seenFix.backupPath}`,
+    );
+  }
+} catch (err) {
+  console.warn(`[db] first-run tidy-up skipped: ${(err as Error).message}`);
 }

@@ -68,6 +68,8 @@ function main() {
   const watcher = new FeedWatcher();
   let counts = { urgent: 0, total: 0 };
   let feedReachable = false;
+  /** Last GET /api/status answer — the server's own account of how Slack is doing. */
+  let serverStatus = null;
 
   /* ------------------------------------------------------------- window --- */
 
@@ -231,12 +233,54 @@ function main() {
 
   let lastTrayShown = null;
 
+  /**
+   * Both mouse buttons open the same menu.
+   *
+   * It used to be: left-click opens the window, right-click shows the status menu. Nobody
+   * who has not been told about the right-click will ever find it — so when something was
+   * wrong, all the app offered was an odd-looking icon and no way to ask why. Everything
+   * that matters is now one ordinary click away, and "Open Slack Copilot" is the first item
+   * in the menu, so the old habit still lands on the window in one more click.
+   */
   function createTray() {
     tray = new Tray(trayImage('tray-startingTemplate'));
     tray.setIgnoreDoubleClickEvents(true);
-    tray.on('click', () => showWindow());
+    tray.on('click', () => tray.popUpContextMenu(buildTrayMenu()));
     tray.on('right-click', () => tray.popUpContextMenu(buildTrayMenu()));
     updateTray();
+  }
+
+  /**
+   * One sentence about Slack, from what the server itself reports (GET /api/status).
+   * Returns null when there is no answer to go on, so the caller falls back to what it
+   * could infer from the server's log.
+   */
+  function slackLineFromServer() {
+    const list =
+      serverStatus && Array.isArray(serverStatus.workspaces) ? serverStatus.workspaces : null;
+    if (!list) return null;
+    // registered:false means the server genuinely does not know yet — never treat that as
+    // either good or bad news.
+    const known = list.filter((w) => w && w.registered && w.state);
+    if (known.length === 0) return null;
+    const names = (l) => l.map((w) => w.teamName || w.key).join(' and ');
+    const failing = known.filter((w) => w.state === 'error');
+    if (failing.length) return `Can't sign in to ${names(failing)}`;
+    const waiting = known.filter((w) => w.state === 'reconnecting');
+    if (waiting.length) return `Disconnected from ${names(waiting)} — retrying`;
+    const starting = known.filter((w) => w.state === 'connecting');
+    if (starting.length) return `Connecting to ${names(starting)}…`;
+    return `Connected to ${names(known)}`;
+  }
+
+  /** True only when every workspace the server knows about is connected. */
+  function slackHealthyFromServer() {
+    const list =
+      serverStatus && Array.isArray(serverStatus.workspaces) ? serverStatus.workspaces : null;
+    if (!list) return null;
+    const known = list.filter((w) => w && w.registered && w.state);
+    if (known.length === 0) return null;
+    return known.every((w) => w.state === 'connected');
   }
 
   /** One short sentence a non-technical person can act on. */
@@ -254,6 +298,10 @@ function main() {
       default:
         break;
     }
+    // First-hand beats inferred: this works even when we attached to a server we did not
+    // start, whose log we cannot read at all.
+    const fromServer = slackLineFromServer();
+    if (fromServer) return fromServer;
     switch (s.slack) {
       case 'not-configured':
         return 'Running — Slack is not set up yet';
@@ -273,6 +321,8 @@ function main() {
   function healthy() {
     const s = supervisor.status();
     if (s.server !== 'up') return false;
+    const fromServer = slackHealthyFromServer();
+    if (fromServer !== null) return fromServer;
     return s.slack !== 'reconnecting' && s.slack !== 'error' && s.slack !== 'not-configured';
   }
 
@@ -290,7 +340,7 @@ function main() {
     else if (counts.urgent > 0) title = ` ${counts.urgent}`;
     tray.setTitle(title, { fontType: 'monospacedDigit' });
 
-    tray.setToolTip(`Slack Copilot — ${healthLine()}\nClick to open · right-click for options`);
+    tray.setToolTip(`Slack Copilot — ${healthLine()}\nClick for how things are going, and to open it`);
 
     if (app.dock) app.dock.setBadge(counts.urgent > 0 ? String(counts.urgent) : '');
 
@@ -309,11 +359,21 @@ function main() {
 
   function buildTrayMenu() {
     const s = supervisor.status();
-    const items = [
+    // "Open Slack Copilot" is deliberately first: it is what almost every click is for, it
+    // is the item under the cursor when the menu appears, and it means a left-click still
+    // reaches the window without the user having to read anything. The two status lines sit
+    // directly under it so the answer to "is this thing working?" is never hidden.
+    const status = [
       { label: healthLine(), enabled: false },
       { label: urgentLine(), enabled: false },
-      { type: 'separator' },
+    ];
+    if (s.owner === 'external') {
+      status.push({ label: 'Using the copy already running on this Mac', enabled: false });
+    }
+    const items = [
       { label: 'Open Slack Copilot', click: () => showWindow() },
+      { type: 'separator' },
+      ...status,
       { type: 'separator' },
       {
         label: 'Start automatically when I log in',
@@ -334,9 +394,6 @@ function main() {
       { type: 'separator' },
       { label: 'Quit Slack Copilot', accelerator: 'Command+Q', click: () => app.quit() },
     ];
-    if (s.owner === 'external') {
-      items.splice(2, 0, { label: 'Using the copy already running on this Mac', enabled: false });
-    }
     return Menu.buildFromTemplate(items);
   }
 
@@ -514,6 +571,10 @@ function main() {
       counts = c;
       updateTray();
     });
+    watcher.on('status', (s) => {
+      serverStatus = s;
+      updateTray();
+    });
     watcher.on('ok', () => {
       if (!feedReachable) {
         feedReachable = true;
@@ -521,6 +582,9 @@ function main() {
       }
     });
     watcher.on('error', (err) => {
+      // Stale news is worse than none: if we cannot reach the server we cannot claim
+      // anything about Slack either.
+      serverStatus = null;
       if (feedReachable) {
         feedReachable = false;
         updateTray();

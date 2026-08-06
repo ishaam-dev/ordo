@@ -52,15 +52,19 @@ to where it says *"Slack Copilot" was blocked*, and click **Open Anyway**.
 | A filled speech bubble | Everything is working. |
 | A bubble with a number next to it, like `3` | 3 urgent messages are waiting for you. |
 | A hollow bubble | It is still starting up. Give it a few seconds. |
-| A crossed-out bubble with a `!` | Something is wrong. Click the bubble for the reason. |
+| A crossed-out bubble with a `!` | Something is wrong. Click the bubble and read the first line of the menu. |
 
-- **Click the bubble** to open the Slack Copilot window.
-- **Right-click the bubble** for the menu: it tells you in plain words how things
-  are going, and lets you close the app or stop it starting automatically.
+**Click the bubble** — with either mouse button — and a short menu appears:
+
+- **Open Slack Copilot** is the first item, so opening the window is one more click.
+- Underneath it, in plain words: how things are going, and how many urgent
+  messages are waiting.
+- Below that: close the app, restart it, stop it starting automatically, or find
+  the files to send someone if you need help.
 
 **Closing the window does not switch it off.** It keeps watching in the
-background — that is the point. To switch it off completely, right-click the
-bubble and choose **Quit Slack Copilot**.
+background — that is the point. To switch it off completely, click the bubble
+and choose **Quit Slack Copilot**.
 
 ### Notifications
 
@@ -71,19 +75,48 @@ It is deliberately quiet:
 
 - Only the most urgent messages ever cause a notification. Routine ones never do.
 - The same conversation never notifies you twice.
-- Installing it does not set off a pile of notifications about old messages.
+- Messages from before it started watching never notify you at all, so installing
+  it — or leaving it off for a week — cannot set off a pile of notifications about
+  things you have already read.
+- Every conversation that already existed the first time it ran is adopted in
+  silence, even if Claude only decides later that one of them was urgent.
 
 If you are not seeing notifications, open the Slack Copilot window, then from the
 menu at the very top of the screen choose **Slack Copilot → Send a test
 notification**. If nothing appears, macOS is blocking them: open System Settings →
 Notifications → Slack Copilot and switch **Allow notifications** on.
 
+### What "unread" means here, and the first day
+
+The blue dot means **arrived since Slack Copilot has been watching your Slack** —
+not "unread in Slack".
+
+The first time it runs it collects the last few days of messages so nothing is
+missing, and it also does this whenever it has been switched off for a while. It
+knows the difference between the two:
+
+- Messages from **before it started watching** are filed as already read. They are
+  all there, and you can read them, but they do not get a blue dot, they are not
+  counted next to the menu bar icon, and they never cause a notification. So the
+  first time you open it, you do not get a screenful of things you dealt with in
+  Slack last Tuesday.
+- Messages that arrive **while it is watching** — including ones that came in
+  overnight or while your laptop was shut — are unread, exactly as you would
+  expect.
+
+### If someone edits or deletes a message
+
+Slack Copilot follows along. If someone changes what they wrote, the wording here
+changes too, and Claude reads it again and updates its summary. If someone deletes
+a message, it stops showing what it said. Neither of these puts a conversation you
+have already dealt with back in your list.
+
 ---
 
 ## When something looks wrong
 
-Slack Copilot tells you rather than failing quietly. Right-click the speech
-bubble and read the first line of the menu.
+Slack Copilot tells you rather than failing quietly. Click the speech bubble and
+read the first line of the menu.
 
 | It says | What is happening | What to do |
 |---|---|---|
@@ -96,8 +129,13 @@ bubble and read the first line of the menu.
 | Something else is using the connection this app needs | Another program has taken the door it uses. | Restart your Mac. |
 | Slack Copilot can't find its files | The Slack Copilot folder was moved or renamed. | Open the folder and double-click **install.command** again. |
 
-If you need to send someone the details, right-click the bubble and choose
-**Show the activity log** — a Finder window opens with the files they will ask for.
+Inside the Slack Copilot window, the top right corner shows one line per Slack
+workspace with a coloured dot: green when it is connected, amber while it is
+reconnecting, red when it cannot get in. Hover over a line to read why. If Slack
+drops out, that dot changes — the app does not just go quiet on you.
+
+If you need to send someone the details, click the bubble and choose **Show the
+activity log** — a Finder window opens with the files they will ask for.
 
 ### Closing your laptop, restarts, and crashes
 
@@ -166,6 +204,20 @@ npm run app:icons    # regenerates assets/ from code (no binary assets in git)
 
 ### Behaviour worth knowing
 
+- **The watch-start rule.** Each workspace records, once and forever, the moment it
+  first connected (`sync_state`, reserved `channel_id = '__watch_start__'`). The
+  catch-up sweep stores everything it finds, but a message older than that mark does
+  not mark its thread unread — so a first run does not present days of already-read
+  history as a queue. Live messages are unaffected. The rule and its rationale are
+  documented at length in `src/db.ts`; it is applied by the `ingest` callback in
+  `src/ingest.ts`. An existing database is tidied up once on startup
+  (`markPreWatchThreadsSeen`, guarded by a marker row, `VACUUM INTO` backup first).
+- **Menu bar.** Both mouse buttons open the same menu; `Open Slack Copilot` is the
+  first item. Nothing about the app's state is reachable only by right-clicking.
+- **Slack connection state** comes from `GET /api/status`, which `src/ingest.ts`
+  feeds from the Socket-Mode lifecycle events. The app reads it on each feed poll,
+  which is why the menu can say `Connected to <teams>` even when it attached to a
+  server it did not start (and therefore cannot read that server's log).
 - **Port sharing.** On startup the app probes `127.0.0.1:5252`. If a Slack Copilot
   server is already answering (e.g. someone's `npm run dev`), it *attaches* to it,
   never spawns a second one, and never kills it on quit. If nothing is there it

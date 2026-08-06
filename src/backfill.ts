@@ -5,8 +5,14 @@
  * DM and @-mention that arrives overnight is invisible to the live event stream. This
  * module asks Slack for what we missed and pushes each message through the *same* filter
  * and store path as a live event (`BackfillContext.ingest`), so dedup, thread creation,
- * status handling and analysis all behave identically. Backfilled items are not announced
- * anywhere special — they just show up as normal feed rows.
+ * status handling and analysis all behave identically. Caught-up items are not announced
+ * anywhere special — they just show up as normal feed rows, and they never raise a
+ * notification.
+ *
+ * One thing this module deliberately does NOT decide: whether a message it finds counts as
+ * unread. That is the WATCH-START RULE, applied by the `ingest` callback in src/ingest.ts —
+ * anything older than the moment we first connected to a workspace is history the user
+ * already read in Slack, so it is stored without lighting up the feed.
  *
  * Strategy (chosen after probing what these user tokens can actually do):
  *   - DMs / group DMs: `conversations.list(types:'im,mpim')` → `conversations.history`
@@ -48,6 +54,12 @@ export interface BackfillContext {
    * The live-event filter + store path. Returns true when a new message row was stored.
    */
   ingest: (msg: any, channelId: string, channelType: ConversationType) => Promise<boolean>;
+  /**
+   * Called with `true` when a sweep starts and `false` when it ends, so the caller can say
+   * "catching up…" somewhere the user can see it. Optional, and never allowed to break a
+   * sweep — this module owns no UI and imports nothing that does.
+   */
+  onSweep?: (active: boolean, reason: string) => void;
 }
 
 // ---------- bounds ----------
@@ -263,6 +275,15 @@ function oldestFor(ctx: BackfillContext, channelId: string): number {
 const inFlight = new Set<string>();
 const lastRunAt = new Map<string, number>();
 
+/** A reporting hook must never be able to abort a sweep. */
+function notifySweep(ctx: BackfillContext, active: boolean, reason: string): void {
+  try {
+    ctx.onSweep?.(active, reason);
+  } catch (err) {
+    console.warn(`[backfill] ${ctx.workspaceKey}: sweep status hook failed: ${errText(err)}`);
+  }
+}
+
 export async function runBackfill(
   ctx: BackfillContext,
   mode: BackfillMode,
@@ -276,6 +297,7 @@ export async function runBackfill(
   inFlight.add(key);
   lastRunAt.set(key, Date.now());
   const startedAt = Date.now();
+  notifySweep(ctx, true, reason);
   let swept = 0;
   let stored = 0;
   let failed = 0;
@@ -401,6 +423,7 @@ export async function runBackfill(
   } finally {
     inFlight.delete(key);
     lastRunAt.set(key, Date.now());
+    notifySweep(ctx, false, reason);
     const secs = ((Date.now() - startedAt) / 1000).toFixed(1);
     const problems = failed > 0 ? `, ${failed} failed` : '';
     console.log(

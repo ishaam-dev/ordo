@@ -5,11 +5,17 @@ import {
   insertThread,
   insertMessage,
   markThreadActive,
+  markThreadSeenIfNew,
   touchThreadActivity,
   setThreadChannelName,
   setThreadPermalink,
+  updateMessageText,
+  markMessageDeleted,
+  markAnalysisStale,
+  ensureWatchStart,
   type ThreadRow,
 } from './db.js';
+import { registerIngestHealth } from './health.js';
 import {
   runBackfill,
   startBackfillScheduler,
@@ -20,6 +26,19 @@ import {
 const { App } = bolt;
 
 const ALLOWED_SUBTYPES = new Set<string | undefined>([undefined, 'file_share', 'thread_broadcast']);
+
+/**
+ * Subtypes that are not new messages but corrections to ones we may already show:
+ * someone edited or deleted their message in Slack. Dropping these (as we used to) leaves
+ * a card quoting words that no longer exist — the single most misleading thing this app
+ * could do to someone triaging. Payload shapes verified in
+ * node_modules/@slack/types/dist/events/message.d.ts:
+ *   message_changed: { channel, ts (event ts), message, previous_message }
+ *   message_deleted: { channel, ts (event ts), deleted_ts, previous_message }
+ * Note `ts` is the *event's* time in both — the message itself is `message.ts` /
+ * `deleted_ts`.
+ */
+const MUTATION_SUBTYPES = new Set<string>(['message_changed', 'message_deleted']);
 
 /** How long before we retry resolving a channel name / permalink that came back empty. */
 const METADATA_RETRY_MS = 10 * 60_000;
@@ -36,6 +55,15 @@ interface WorkspaceRuntime {
   userNameCache: Map<string, string>;
   /** thread id → last time we tried to fill in missing channel_name / permalink. */
   metadataRetryAt: Map<number, number>;
+  /**
+   * Slack ts (seconds) of the moment we first ever connected to this workspace. Messages
+   * the catch-up sweep finds from before it are history the user already read in Slack, so
+   * they are stored without marking the conversation unread. See the WATCH-START RULE in
+   * src/db.ts. -Infinity until the mark is loaded (which happens before the first sweep),
+   * so the failure direction is "a message stays unread", never "a real message is
+   * silently filed as already-read".
+   */
+  watchStart: number;
 }
 
 // ---------- mention detection ----------
@@ -166,13 +194,22 @@ async function fillMissingMetadata(
  * Keep rules (DESIGN.md): DMs, messages containing `<@me>`, replies in threads we already
  * track. My own messages are appended to threads we track but never create one and never
  * mark it unread.
+ *
+ * `historical` (WATCH-START RULE, src/db.ts) means "this predates the moment we started
+ * watching, so the user read it in Slack days ago": the message is stored in full, but the
+ * conversation is not marked unread on its account.
  */
-async function ingestMessage(rt: WorkspaceRuntime, ev: any): Promise<boolean> {
+async function ingestMessage(
+  rt: WorkspaceRuntime,
+  ev: any,
+  opts: { historical?: boolean } = {},
+): Promise<boolean> {
   if (!ALLOWED_SUBTYPES.has(ev?.subtype)) return false;
   const ts: unknown = ev?.ts;
   const channelId: unknown = ev?.channel;
   if (typeof ts !== 'string' || typeof channelId !== 'string') return false;
 
+  const historical = opts.historical === true;
   const isDM = ev.channel_type === 'im' || ev.channel_type === 'mpim';
   const text: string = typeof ev.text === 'string' ? ev.text : '';
   const authorId: string | null = typeof ev.user === 'string' ? ev.user : null;
@@ -222,9 +259,15 @@ async function ingestMessage(rt: WorkspaceRuntime, ev: any): Promise<boolean> {
     thread = findThread(rt.key, channelId, parentTs);
     if (!thread) return false;
     if (created) {
+      // Threads are born unread; one we only learned about from history starts read, so a
+      // first launch shows what is actually waiting instead of a wall of old news.
+      if (historical) {
+        markThreadSeenIfNew(thread.id);
+        thread.status = 'seen';
+      }
       console.log(
-        `[${rt.key}] new ${thread.kind} thread #${thread.id} in ` +
-          `${channelName ?? channelId} (${rt.teamName})`,
+        `[${rt.key}] ${historical ? 'catching up on an older' : 'new'} ${thread.kind} ` +
+          `thread #${thread.id} in ${channelName ?? channelId} (${rt.teamName})`,
       );
     }
   }
@@ -248,7 +291,9 @@ async function ingestMessage(rt: WorkspaceRuntime, ev: any): Promise<boolean> {
   });
   if (!stored) return false; // already had it (redelivery or catch-up overlap)
 
-  if (isMe) {
+  if (isMe || historical) {
+    // Mine, or already read in Slack before this app existed: keep the conversation in the
+    // right place in the feed, but do not claim it needs attention.
     touchThreadActivity(thread.id, ts);
   } else {
     markThreadActive(thread.id, ts);
@@ -258,6 +303,99 @@ async function ingestMessage(rt: WorkspaceRuntime, ev: any): Promise<boolean> {
   return true;
 }
 
+// ---------- edits and deletions made in Slack ----------
+
+function safeJson(value: unknown): string | null {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Someone changed or removed a message in Slack after we stored it.
+ *
+ * What this must get right:
+ *   - An edited card must show the *current* wording, never the original.
+ *   - A deleted message must stop being quoted.
+ *   - Either way the analysis underneath is now about text that changed, so it is marked
+ *     stale and re-runs.
+ *   - Neither counts as new activity: a thread the user already marked done stays done,
+ *     and a thread already read stays read. Someone fixing a typo must not put a
+ *     conversation back in the inbox.
+ */
+async function handleMessageMutation(rt: WorkspaceRuntime, ev: any): Promise<void> {
+  const channelId: unknown = ev?.channel;
+  if (typeof channelId !== 'string') return;
+
+  const forget = (ts: string, what: string): void => {
+    const done = markMessageDeleted({ workspace: rt.key, channelId, ts });
+    // null = we never had it, so there is nothing on screen to correct; changed = false
+    // means it was already gone and the analyzer has no reason to look again.
+    if (done === null || !done.changed) return;
+    markAnalysisStale(done.threadId);
+    console.log(`[${rt.key}] ${what} in Slack — thread #${done.threadId} updated and re-queued`);
+  };
+
+  if (ev.subtype === 'message_deleted') {
+    const ts =
+      typeof ev.deleted_ts === 'string'
+        ? ev.deleted_ts
+        : typeof ev.previous_message?.ts === 'string'
+          ? ev.previous_message.ts
+          : null;
+    if (ts !== null) forget(ts, 'a message was deleted');
+    return;
+  }
+
+  // message_changed
+  const msg = ev.message;
+  if (msg === null || typeof msg !== 'object') return;
+  const ts: unknown = msg.ts;
+  if (typeof ts !== 'string') return;
+
+  // Deleting the first message of a thread that has replies does not delete it — Slack
+  // rewrites it as a tombstone, which arrives as an edit. Same meaning to a reader.
+  if (msg.subtype === 'tombstone') {
+    forget(ts, 'a message was removed');
+    return;
+  }
+
+  const text: string = typeof msg.text === 'string' ? msg.text : '';
+  const previous: string | null =
+    typeof ev.previous_message?.text === 'string' ? ev.previous_message.text : null;
+  // Slack also sends message_changed when it merely attaches a link preview or a reaction
+  // summary. Nobody rewrote anything, so there is nothing to correct and no reason to make
+  // the analyzer redo the thread.
+  if (previous !== null && previous === text) return;
+
+  const edit = updateMessageText({
+    workspace: rt.key,
+    channelId,
+    ts,
+    text: text === '' ? null : text,
+    raw: safeJson(msg),
+  });
+  if (edit !== null) {
+    if (edit.changed) {
+      markAnalysisStale(edit.threadId);
+      console.log(
+        `[${rt.key}] a message was edited in Slack — thread #${edit.threadId} updated and re-queued`,
+      );
+    }
+    return;
+  }
+
+  /*
+   * We never stored this message. Usually that means it was never ours to keep — but an
+   * edit can *add* an `@me` to a channel message, and that is the one case where an edit is
+   * genuinely news. Offer the edited message to the normal filter, which applies the same
+   * keep/drop rules as any live message and dedupes if we somehow already had it.
+   */
+  await ingestMessage(rt, { ...msg, channel: channelId, channel_type: ev.channel_type });
+}
+
 // ---------- connection lifecycle ----------
 
 /**
@@ -265,8 +403,13 @@ async function ingestMessage(rt: WorkspaceRuntime, ev: any): Promise<boolean> {
  * needs a catch-up sweep. @slack/socket-mode v3 (Bolt v5's receiver) emits its internal
  * State enum values on the SocketModeClient: 'connecting' | 'authenticated' | 'connected' |
  * 'reconnecting' | 'disconnecting' | 'disconnected' (verified in node_modules).
+ *
+ * These same events are the only honest source for "is Slack actually connected?", so each
+ * one is also reported to the health registry (src/health.ts) and ends up in GET
+ * /api/status. Before this, a silent disconnect looked exactly like a quiet afternoon: the
+ * feed simply stopped growing and nothing anywhere said why.
  */
-function attachConnectionHooks(app: any, ctx: BackfillContext): void {
+function attachConnectionHooks(app: any, rt: WorkspaceRuntime, ctx: BackfillContext): void {
   const smClient = app?.receiver?.client;
   if (smClient === undefined || typeof smClient.on !== 'function') {
     console.warn(
@@ -278,6 +421,11 @@ function attachConnectionHooks(app: any, ctx: BackfillContext): void {
 
   let everConnected = false;
   smClient.on('connected', () => {
+    registerIngestHealth(rt.key, {
+      state: 'connected',
+      teamName: rt.teamName,
+      message: null,
+    });
     if (!everConnected) {
       everConnected = true; // the startup sweep covers the first connect
       return;
@@ -286,15 +434,32 @@ function attachConnectionHooks(app: any, ctx: BackfillContext): void {
     void runBackfill(ctx, 'full', 'reconnect');
   });
   smClient.on('disconnected', () => {
+    registerIngestHealth(rt.key, {
+      state: 'reconnecting',
+      teamName: rt.teamName,
+      message: 'Lost the connection to Slack — trying again. Nothing sent meanwhile is lost.',
+    });
     console.log(
       `[${ctx.workspaceKey}] socket disconnected — anything sent now is caught up on reconnect`,
     );
+  });
+  smClient.on('reconnecting', () => {
+    registerIngestHealth(rt.key, {
+      state: 'reconnecting',
+      teamName: rt.teamName,
+      message: 'Reconnecting to Slack…',
+    });
+  });
+  smClient.on('connecting', () => {
+    registerIngestHealth(rt.key, { state: 'connecting', teamName: rt.teamName, message: null });
   });
 }
 
 // ---------- startup ----------
 
 export async function startIngest(ws: Workspace): Promise<void> {
+  registerIngestHealth(ws.key, { state: 'connecting', message: 'Connecting to Slack…' });
+
   const app = new App({
     token: ws.userToken,
     appToken: ws.appToken,
@@ -308,7 +473,17 @@ export async function startIngest(ws: Workspace): Promise<void> {
     ignoreSelf: false,
   });
 
-  const auth = (await app.client.auth.test()) as any;
+  let auth: any;
+  try {
+    auth = (await app.client.auth.test()) as any;
+  } catch (err) {
+    registerIngestHealth(ws.key, {
+      state: 'error',
+      message: "Slack would not accept this workspace's sign-in details.",
+    });
+    throw err;
+  }
+
   const rt: WorkspaceRuntime = {
     key: ws.key,
     myUserId: auth.user_id as string,
@@ -316,11 +491,23 @@ export async function startIngest(ws: Workspace): Promise<void> {
     client: app.client,
     userNameCache: new Map(),
     metadataRetryAt: new Map(),
+    watchStart: Number.NEGATIVE_INFINITY,
   };
+  registerIngestHealth(ws.key, {
+    state: 'connecting',
+    teamName: rt.teamName,
+    message: 'Connecting to Slack…',
+  });
 
   app.event('message', async ({ event }) => {
     try {
-      await ingestMessage(rt, event as any);
+      const ev = event as any;
+      // Edits and deletions are corrections to what we already show, not new messages.
+      if (MUTATION_SUBTYPES.has(ev?.subtype)) {
+        await handleMessageMutation(rt, ev);
+        return;
+      }
+      await ingestMessage(rt, ev);
     } catch (err) {
       console.error(`[${ws.key}] error handling message event:`, err);
     }
@@ -331,14 +518,51 @@ export async function startIngest(ws: Workspace): Promise<void> {
     client: app.client,
     myUserId: rt.myUserId,
     myUserName: typeof auth.user === 'string' ? auth.user : null,
-    ingest: (msg: any, channelId: string, channelType: ConversationType) =>
-      ingestMessage(rt, { ...msg, channel: channelId, channel_type: channelType }),
+    ingest: (msg: any, channelId: string, channelType: ConversationType) => {
+      /*
+       * WATCH-START RULE (src/db.ts): anything the sweep finds from before we first
+       * connected is history the user has already read in Slack. It is stored in full, but
+       * it does not light up the feed, the menubar badge, or a notification.
+       */
+      const at = Number.parseFloat(msg?.ts ?? '');
+      const historical = Number.isFinite(at) && at < rt.watchStart;
+      return ingestMessage(
+        rt,
+        { ...msg, channel: channelId, channel_type: channelType },
+        { historical },
+      );
+    },
+    onSweep: (active: boolean) => {
+      registerIngestHealth(rt.key, {
+        state: 'connected',
+        teamName: rt.teamName,
+        message: active ? 'Catching up on messages from while the app was closed…' : null,
+      });
+    },
   };
 
-  attachConnectionHooks(app, backfillCtx);
+  attachConnectionHooks(app, rt, backfillCtx);
 
-  await app.start();
+  try {
+    await app.start();
+  } catch (err) {
+    registerIngestHealth(ws.key, {
+      state: 'error',
+      teamName: rt.teamName,
+      message: 'Could not connect to Slack.',
+    });
+    throw err;
+  }
+  registerIngestHealth(ws.key, { state: 'connected', teamName: rt.teamName, message: null });
   console.log(`[${ws.key}] connected to "${rt.teamName}" as user ${rt.myUserId} (socket mode)`);
+
+  // Set before the first sweep can store anything, and only ever set once per workspace:
+  // this is the line between "history" and "arrived while we were watching".
+  rt.watchStart = ensureWatchStart(ws.key, Date.now() / 1000);
+  console.log(
+    `[${ws.key}] watching since ${new Date(rt.watchStart * 1000).toISOString()} — ` +
+      'anything older than that is caught up quietly, without marking it unread',
+  );
 
   startBackfillScheduler(backfillCtx);
   void runBackfill(backfillCtx, 'full', 'startup');
