@@ -64,8 +64,15 @@ export interface BackfillContext {
 
 // ---------- bounds ----------
 
-const FIRST_RUN_LOOKBACK_S = 3 * 24 * 60 * 60; // first sight of a conversation
-const MAX_LOOKBACK_S = 7 * 24 * 60 * 60; // hard ceiling for any sweep
+// Two different jobs, deliberately different sizes:
+//   FIRST_RUN_LOOKBACK — how much *history* to import for a conversation we have never
+//   seen. Small on purpose: old threads the user already dealt with in Slack are clutter.
+//   MAX_LOOKBACK — the ceiling on catching up a conversation we ARE tracking, i.e. how
+//   long the app can be off before messages start being missed for good. Generous, because
+//   a missed message is the one failure this app must not have. It only ever fetches from
+//   the stored high-water mark, so a long ceiling costs nothing until there is a real gap.
+const FIRST_RUN_LOOKBACK_S = 2 * 24 * 60 * 60; // first sight of a conversation
+const MAX_LOOKBACK_S = 30 * 24 * 60 * 60; // hard ceiling for any sweep
 const MAX_DM_CONVERSATIONS = 60;
 const MAX_CHANNELS = 40;
 const MAX_INCREMENTAL_CONVERSATIONS = 80;
