@@ -245,19 +245,16 @@ export interface WorkspaceHealth {
 const ingestByKey = new Map<string, WorkspaceHealth>();
 
 /**
- * TODO(ingest owner of src/ingest.ts): call this — `registerIngestHealth(ws.key, {...})`
- * imported from './health.js' — from startIngest() and from the Socket-Mode lifecycle
- * handlers, so the UI can stop guessing whether Slack is actually connected:
+ * Called by src/ingest.ts from startIngest() and every Socket-Mode lifecycle handler, and
+ * by the catch-up sweep, so GET /api/status can report whether Slack is actually connected
+ * rather than guessing from which workspaces happen to have sent messages.
  *
- *   registerIngestHealth(ws.key, { state: 'connecting' });                       // before connect
- *   registerIngestHealth(ws.key, { state: 'connected', teamName: team.name });   // after auth.test / 'connected'
- *   registerIngestHealth(ws.key, { state: 'reconnecting', message: 'reconnecting (attempt 3)' });
- *   registerIngestHealth(ws.key, { state: 'error', message: 'Slack refused the connection' });
+ * A workspace that has never reported is serialized as `{ key, registered: false }` with no
+ * `connected` field at all — deliberately, because a "connected: true" we cannot verify is
+ * worse than no answer, and the UI draws no dot for it.
  *
- * Until that lands, GET /api/status reports every workspace as
- * `{ key, registered: false }` — deliberately, because a "connected: true" we cannot
- * verify is worse than no answer. Keep `message` plain-English: it is rendered
- * verbatim to a non-technical user. Never pass a token or raw Slack payload here.
+ * Keep `message` plain-English: it is rendered verbatim to a non-technical user. Never pass
+ * a token or raw Slack payload here.
  */
 export function registerIngestHealth(workspaceKey: string, report: IngestReport): void {
   const key = String(workspaceKey);

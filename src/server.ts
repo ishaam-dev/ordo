@@ -87,11 +87,12 @@ export function startServer(port: number): Promise<void> {
 
   // Host allowlist — mounted first so it covers every route, including static files.
   //
-  // NOTE for the upcoming WebSocket/chat endpoint: WS upgrades bypass CORS entirely and
-  // custom headers cannot be set on the handshake, so this middleware alone will not cover
-  // them. That endpoint must (a) re-check the Host header on the upgrade request against
-  // this same allowlist, (b) explicitly validate the `Origin` header against it too, and
-  // (c) require the same x-copilot-token, passed as a query param or as the first frame.
+  // Chat streams over SSE (fetch + ReadableStream), not a WebSocket, precisely so it stays
+  // behind this middleware and the token check. If a WebSocket is ever added it escapes both:
+  // WS upgrades bypass CORS entirely and the handshake cannot carry a custom header. Such an
+  // endpoint would have to (a) re-check Host on the upgrade against this same allowlist,
+  // (b) validate `Origin` against it too, and (c) require the token via query param or first
+  // frame. Prefer SSE and avoid the problem.
   app.use((req, res, next) => {
     const host = (req.headers.host ?? '').toLowerCase();
     if (!allowedHosts.has(host)) {
