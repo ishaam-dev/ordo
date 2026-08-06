@@ -3,12 +3,25 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-export const DB_PATH = path.join(projectRoot, 'data.db');
+
+/**
+ * The live database. `COPILOT_DB_PATH` overrides it so migrations and race tests can be
+ * exercised against a throwaway copy without going anywhere near the user's real data;
+ * the app itself never sets it.
+ */
+export const DB_PATH = ((): string => {
+  const override = (process.env.COPILOT_DB_PATH ?? '').trim();
+  return override !== '' ? path.resolve(override) : path.join(projectRoot, 'data.db');
+})();
 
 const db = new DatabaseSync(DB_PATH);
 
 db.exec('PRAGMA journal_mode = WAL;');
 db.exec('PRAGMA foreign_keys = ON;');
+// The dev server, the packaged app and any test boot can all have this file open at once,
+// and the catch-up sweep writes in bursts. Without a busy timeout the loser of a write
+// lock fails instantly with SQLITE_BUSY and its message is lost.
+db.exec('PRAGMA busy_timeout = 5000;');
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS threads (
@@ -47,6 +60,42 @@ db.exec(`
     analyzed_at TEXT,
     session_id TEXT
   );
+
+  /*
+   * Catch-up high-water marks (see src/backfill.ts). One row per Slack conversation we
+   * have swept; last_ts is the newest message ts we have already processed there, so a
+   * reconnect/wake only asks Slack for what came after it. Additive table — existing
+   * databases pick it up on first run with no data migration.
+   */
+  CREATE TABLE IF NOT EXISTS sync_state (
+    workspace TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    last_ts TEXT,
+    updated_at TEXT,
+    PRIMARY KEY (workspace, channel_id)
+  );
+
+  /*
+   * threads.status is meant to be CHECK(status IN ('new','seen','done')), but SQLite cannot
+   * add a CHECK to an existing table without rebuilding it — far too much risk to the
+   * user's live database for an invariant we can enforce additively. These triggers are the
+   * equivalent guard: same rejection, no data rewrite. The UPDATE guard only fires when the
+   * status column actually changes, so an unrelated column update on a legacy row with an
+   * odd status still succeeds.
+   */
+  CREATE TRIGGER IF NOT EXISTS threads_status_insert_guard
+  BEFORE INSERT ON threads
+  FOR EACH ROW WHEN NEW.status NOT IN ('new','seen','done')
+  BEGIN
+    SELECT RAISE(ABORT, 'threads.status must be new, seen or done');
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS threads_status_update_guard
+  BEFORE UPDATE OF status ON threads
+  FOR EACH ROW WHEN NEW.status IS NOT OLD.status AND NEW.status NOT IN ('new','seen','done')
+  BEGIN
+    SELECT RAISE(ABORT, 'threads.status must be new, seen or done');
+  END;
 `);
 
 // ---------- row shapes ----------
@@ -103,27 +152,57 @@ export interface FeedItem {
   message_count: number;
 }
 
+/** A conversation we already track, for the cheap incremental catch-up sweep. */
+export interface TrackedConversation {
+  channel_id: string;
+  kind: 'dm' | 'mention';
+}
+
 // ---------- prepared statements ----------
 
 const stmtFindThread = db.prepare(
   'SELECT * FROM threads WHERE workspace = ? AND channel_id = ? AND thread_ts = ?',
 );
 
+/*
+ * DO NOTHING (not "OR IGNORE"/plain INSERT) so that two events for the same brand-new
+ * thread cannot make the loser throw: the caller re-reads the winner's row instead of
+ * dropping a message. See insertThread().
+ */
 const stmtInsertThread = db.prepare(
   `INSERT INTO threads (workspace, team_name, channel_id, channel_name, thread_ts, kind, status, last_activity, permalink)
-   VALUES (?, ?, ?, ?, ?, ?, 'new', ?, ?)`,
+   VALUES (?, ?, ?, ?, ?, ?, 'new', ?, ?)
+   ON CONFLICT(workspace, channel_id, thread_ts) DO NOTHING`,
 );
 
+/*
+ * last_activity only ever moves forward: a backfilled message that predates what we
+ * already have must not drag the feed's ordering backwards.
+ */
 const stmtMarkActive = db.prepare(
-  "UPDATE threads SET status = 'new', last_activity = ? WHERE id = ?",
+  `UPDATE threads
+      SET status = 'new',
+          last_activity = CASE
+            WHEN last_activity IS NULL OR CAST(? AS REAL) > CAST(last_activity AS REAL) THEN ?
+            ELSE last_activity END
+    WHERE id = ?`,
 );
 
-const stmtTouchActivity = db.prepare('UPDATE threads SET last_activity = ? WHERE id = ?');
+const stmtTouchActivity = db.prepare(
+  `UPDATE threads
+      SET last_activity = CASE
+            WHEN last_activity IS NULL OR CAST(? AS REAL) > CAST(last_activity AS REAL) THEN ?
+            ELSE last_activity END
+    WHERE id = ?`,
+);
 
 const stmtInsertMessage = db.prepare(
   `INSERT OR IGNORE INTO messages (thread_id, ts, author_id, author_name, text, raw)
    VALUES (?, ?, ?, ?, ?, ?)`,
 );
+
+const stmtUpdateChannelName = db.prepare('UPDATE threads SET channel_name = ? WHERE id = ?');
+const stmtUpdatePermalink = db.prepare('UPDATE threads SET permalink = ? WHERE id = ?');
 
 const stmtFeed = db.prepare(
   `SELECT
@@ -159,6 +238,15 @@ export function findThread(
   return stmtFindThread.get(workspace, channelId, threadTs) as ThreadRow | undefined;
 }
 
+/**
+ * Insert-or-get for a thread key.
+ *
+ * Callers necessarily do async work (channel name / permalink lookups) between "no such
+ * thread" and this call, so two messages arriving together for the same new thread both
+ * reach here. The insert is a no-op for the loser, which then reads the winner's row —
+ * so its message still lands instead of dying on a UNIQUE violation. Socket Mode never
+ * redelivers, so a dropped message here is lost forever.
+ */
 export function insertThread(t: {
   workspace: string;
   teamName: string | null;
@@ -168,7 +256,7 @@ export function insertThread(t: {
   kind: 'dm' | 'mention';
   lastActivity: string;
   permalink: string | null;
-}): number {
+}): { id: number; created: boolean } {
   const res = stmtInsertThread.run(
     t.workspace,
     t.teamName,
@@ -179,19 +267,33 @@ export function insertThread(t: {
     t.lastActivity,
     t.permalink,
   );
-  return Number(res.lastInsertRowid);
+  if (res.changes > 0) return { id: Number(res.lastInsertRowid), created: true };
+
+  const existing = findThread(t.workspace, t.channelId, t.threadTs);
+  if (existing === undefined) {
+    // Only reachable if the row vanished between the conflict and this read.
+    throw new Error(
+      `insertThread: conflict on (${t.workspace}, ${t.channelId}, ${t.threadTs}) but no row found`,
+    );
+  }
+  return { id: existing.id, created: false };
 }
 
-/** New activity from someone else: bump last_activity and reset status to 'new'. */
+/** New activity from someone else: mark unread, and move last_activity forward only. */
 export function markThreadActive(threadId: number, ts: string): void {
-  stmtMarkActive.run(ts, threadId);
+  stmtMarkActive.run(ts, ts, threadId);
 }
 
-/** Activity from myself: bump last_activity only, leave status alone. */
+/** Activity from myself: move last_activity forward only, leave status alone. */
 export function touchThreadActivity(threadId: number, ts: string): void {
-  stmtTouchActivity.run(ts, threadId);
+  stmtTouchActivity.run(ts, ts, threadId);
 }
 
+/**
+ * Store a message. Returns false when we already had it — Socket Mode can redeliver an
+ * unacked event and the catch-up sweep re-reads windows on purpose, and neither of those
+ * should re-open a thread the user already dealt with.
+ */
 export function insertMessage(m: {
   threadId: number;
   ts: string;
@@ -199,8 +301,26 @@ export function insertMessage(m: {
   authorName: string | null;
   text: string | null;
   raw: string | null;
-}): void {
-  stmtInsertMessage.run(m.threadId, m.ts, m.authorId, m.authorName, m.text, m.raw);
+}): boolean {
+  const res = stmtInsertMessage.run(
+    m.threadId,
+    m.ts,
+    m.authorId,
+    m.authorName,
+    m.text,
+    m.raw,
+  );
+  return res.changes > 0;
+}
+
+/** Fill in a channel name we could not resolve when the thread was first seen. */
+export function setThreadChannelName(threadId: number, channelName: string): void {
+  stmtUpdateChannelName.run(channelName, threadId);
+}
+
+/** Fill in a permalink we could not resolve when the thread was first seen. */
+export function setThreadPermalink(threadId: number, permalink: string): void {
+  stmtUpdatePermalink.run(permalink, threadId);
 }
 
 export function getFeed(): FeedItem[] {
@@ -242,8 +362,90 @@ export function getAnalysisForThread(threadId: number): AnalysisRow | undefined 
   return stmtAnalysisForThread.get(threadId) as AnalysisRow | undefined;
 }
 
+const VALID_STATUSES = new Set(['new', 'seen', 'done']);
+
 export function setThreadStatus(id: number, status: 'new' | 'seen' | 'done'): boolean {
+  // Belt to the trigger's braces: fail here with a clear message rather than as a SQL abort.
+  if (!VALID_STATUSES.has(status)) {
+    throw new Error(`setThreadStatus: invalid status ${JSON.stringify(status)}`);
+  }
   return stmtSetStatus.run(status, id).changes > 0;
+}
+
+// ---------- catch-up (backfill) state ----------
+
+const stmtGetSyncMark = db.prepare(
+  'SELECT last_ts FROM sync_state WHERE workspace = ? AND channel_id = ?',
+);
+
+const stmtSetSyncMark = db.prepare(
+  `INSERT INTO sync_state (workspace, channel_id, last_ts, updated_at)
+   VALUES (?, ?, ?, ?)
+   ON CONFLICT(workspace, channel_id) DO UPDATE SET
+     last_ts = CASE
+       WHEN sync_state.last_ts IS NULL OR CAST(excluded.last_ts AS REAL) > CAST(sync_state.last_ts AS REAL)
+         THEN excluded.last_ts
+       ELSE sync_state.last_ts END,
+     updated_at = excluded.updated_at`,
+);
+
+const stmtLatestStoredTs = db.prepare(
+  `SELECT m.ts AS ts FROM messages m
+     JOIN threads t ON t.id = m.thread_id
+    WHERE t.workspace = ? AND t.channel_id = ?
+    ORDER BY CAST(m.ts AS REAL) DESC
+    LIMIT 1`,
+);
+
+const stmtTrackedConversations = db.prepare(
+  'SELECT DISTINCT channel_id, kind FROM threads WHERE workspace = ?',
+);
+
+const stmtRecentMentionThreads = db.prepare(
+  `SELECT channel_id, thread_ts FROM threads
+    WHERE workspace = ? AND kind = 'mention'
+      AND last_activity IS NOT NULL
+      AND CAST(last_activity AS REAL) >= CAST(? AS REAL)
+    ORDER BY CAST(last_activity AS REAL) DESC
+    LIMIT ?`,
+);
+
+/** Newest message ts we have already processed in this conversation, if any. */
+export function getSyncMark(workspace: string, channelId: string): string | null {
+  const row = stmtGetSyncMark.get(workspace, channelId) as { last_ts?: string | null } | undefined;
+  return row?.last_ts ?? null;
+}
+
+/** Advance the high-water mark (never moves backwards). */
+export function setSyncMark(workspace: string, channelId: string, lastTs: string): void {
+  stmtSetSyncMark.run(workspace, channelId, lastTs, new Date().toISOString());
+}
+
+/** Newest message we have stored for a conversation — the seed for its first sweep. */
+export function latestStoredTsForChannel(workspace: string, channelId: string): string | null {
+  const row = stmtLatestStoredTs.get(workspace, channelId) as { ts?: string } | undefined;
+  return row?.ts ?? null;
+}
+
+/** Conversations we already track in this workspace (cheap incremental sweep set). */
+export function listTrackedConversations(workspace: string): TrackedConversation[] {
+  return stmtTrackedConversations.all(workspace) as unknown as TrackedConversation[];
+}
+
+/**
+ * Recently active mention threads, so the catch-up sweep can pull replies that
+ * `conversations.history` never returns (it only yields top-level messages).
+ */
+export function listRecentMentionThreads(
+  workspace: string,
+  sinceTs: string,
+  limit: number,
+): Array<{ channel_id: string; thread_ts: string }> {
+  if (limit <= 0) return [];
+  return stmtRecentMentionThreads.all(workspace, sinceTs, limit) as unknown as Array<{
+    channel_id: string;
+    thread_ts: string;
+  }>;
 }
 
 // ---------- analyzer support (appended; used by src/analyzer.ts) ----------
@@ -308,4 +510,191 @@ export function upsertAnalysis(a: {
     a.analyzedAt,
     a.sessionId,
   );
+}
+
+// ---------- migrations ----------
+
+/**
+ * DM conversations used to be keyed per message (`thread_ts = ev.thread_ts || ev.ts`),
+ * so a back-and-forth with one person became a pile of one-message cards. DMs are now
+ * keyed on the conversation itself (`thread_ts = channel_id`), and this folds the old
+ * rows into that shape.
+ *
+ * Per (workspace, channel_id) with kind='dm': keep one row (the already-canonical one if
+ * a previous run made it, else the lowest id), repoint every other row's messages at it,
+ * drop the emptied rows and their analyses, and merge the surviving row's fields. Mention
+ * threads are never touched. Idempotent: once each DM channel has exactly one row keyed
+ * on the channel id, this finds no work and returns without writing anything.
+ */
+export interface DmMigrationResult {
+  ran: boolean;
+  backupPath: string | null;
+  groupsMerged: number;
+  threadsBefore: number;
+  threadsAfter: number;
+  dmThreadsBefore: number;
+  dmThreadsAfter: number;
+  messagesBefore: number;
+  messagesAfter: number;
+  messagesDropped: number;
+  analysesBefore: number;
+  analysesAfter: number;
+}
+
+function countRows(sql: string): number {
+  const row = db.prepare(sql).get() as { n?: number } | undefined;
+  return Number(row?.n ?? 0);
+}
+
+function backupDatabase(): string {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const target = `${DB_PATH}.bak-${stamp}`;
+  // VACUUM INTO writes a consistent snapshot including anything still in the WAL, which a
+  // plain file copy of a live WAL database would miss.
+  db.prepare('VACUUM INTO ?').run(target);
+  return target;
+}
+
+function maxTs(a: string | null, b: string | null): string | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  const na = Number.parseFloat(a);
+  const nb = Number.parseFloat(b);
+  if (!Number.isFinite(na)) return b;
+  if (!Number.isFinite(nb)) return a;
+  return nb > na ? b : a;
+}
+
+/** 'new' beats 'seen' beats 'done' — a merged card is as unread as its most unread part. */
+function mergeStatus(statuses: string[]): string {
+  if (statuses.includes('new')) return 'new';
+  if (statuses.includes('seen')) return 'seen';
+  return statuses[0] ?? 'new';
+}
+
+export function migrateDmThreadKeys(): DmMigrationResult {
+  const result: DmMigrationResult = {
+    ran: false,
+    backupPath: null,
+    groupsMerged: 0,
+    threadsBefore: countRows('SELECT COUNT(*) AS n FROM threads'),
+    threadsAfter: 0,
+    dmThreadsBefore: countRows("SELECT COUNT(*) AS n FROM threads WHERE kind = 'dm'"),
+    dmThreadsAfter: 0,
+    messagesBefore: countRows('SELECT COUNT(*) AS n FROM messages'),
+    messagesAfter: 0,
+    messagesDropped: 0,
+    analysesBefore: countRows('SELECT COUNT(*) AS n FROM analyses'),
+    analysesAfter: 0,
+  };
+
+  // Groups that are not already "one row, keyed on the channel id".
+  const stmtGroups = db.prepare(
+    `SELECT workspace, channel_id,
+            COUNT(*) AS n,
+            SUM(CASE WHEN thread_ts = channel_id THEN 1 ELSE 0 END) AS canonical
+       FROM threads
+      WHERE kind = 'dm'
+      GROUP BY workspace, channel_id
+     HAVING n > 1 OR canonical = 0`,
+  );
+  type DmGroup = { workspace: string; channel_id: string; n: number; canonical: number };
+
+  if ((stmtGroups.all() as DmGroup[]).length === 0) {
+    result.threadsAfter = result.threadsBefore;
+    result.dmThreadsAfter = result.dmThreadsBefore;
+    result.messagesAfter = result.messagesBefore;
+    result.analysesAfter = result.analysesBefore;
+    return result;
+  }
+
+  result.backupPath = backupDatabase();
+
+  const rowsOfGroup = db.prepare(
+    "SELECT * FROM threads WHERE kind = 'dm' AND workspace = ? AND channel_id = ? ORDER BY id ASC",
+  );
+  const repoint = db.prepare('UPDATE OR IGNORE messages SET thread_id = ? WHERE thread_id = ?');
+  const dropLeftoverMessages = db.prepare('DELETE FROM messages WHERE thread_id = ?');
+  const dropAnalysis = db.prepare('DELETE FROM analyses WHERE thread_id = ?');
+  const dropThread = db.prepare('DELETE FROM threads WHERE id = ?');
+  const updateSurvivor = db.prepare(
+    `UPDATE threads
+        SET thread_ts = ?, channel_name = ?, permalink = ?, last_activity = ?, status = ?
+      WHERE id = ?`,
+  );
+  const staleAnalysis = db.prepare(
+    'UPDATE analyses SET covered_through_ts = NULL WHERE thread_id = ?',
+  );
+
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    // Re-read inside the write transaction: another instance of the app (packaged app +
+    // dev server can run side by side) may have merged some of these already.
+    for (const g of stmtGroups.all() as DmGroup[]) {
+      const rows = rowsOfGroup.all(g.workspace, g.channel_id) as unknown as ThreadRow[];
+      if (rows.length === 0) continue;
+
+      const survivor = rows.find((r) => r.thread_ts === g.channel_id) ?? rows[0];
+      const losers = rows.filter((r) => r.id !== survivor.id);
+
+      let channelName = survivor.channel_name;
+      let permalink = survivor.permalink;
+      let lastActivity = survivor.last_activity;
+      const statuses = [survivor.status];
+
+      for (const loser of losers) {
+        channelName = channelName ?? loser.channel_name;
+        permalink = permalink ?? loser.permalink;
+        lastActivity = maxTs(lastActivity, loser.last_activity);
+        statuses.push(loser.status);
+
+        repoint.run(survivor.id, loser.id);
+        // Anything left behind collided with a message the survivor already had.
+        result.messagesDropped += Number(dropLeftoverMessages.run(loser.id).changes);
+        dropAnalysis.run(loser.id);
+        dropThread.run(loser.id);
+      }
+
+      updateSurvivor.run(
+        g.channel_id,
+        channelName,
+        permalink,
+        lastActivity,
+        mergeStatus(statuses),
+        survivor.id,
+      );
+      // The transcript changed under any existing analysis — force a re-run.
+      staleAnalysis.run(survivor.id);
+      result.groupsMerged += 1;
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+
+  result.ran = true;
+  result.threadsAfter = countRows('SELECT COUNT(*) AS n FROM threads');
+  result.dmThreadsAfter = countRows("SELECT COUNT(*) AS n FROM threads WHERE kind = 'dm'");
+  result.messagesAfter = countRows('SELECT COUNT(*) AS n FROM messages');
+  result.analysesAfter = countRows('SELECT COUNT(*) AS n FROM analyses');
+  return result;
+}
+
+// Run on startup: the user never runs scripts, so an old database has to heal itself.
+// A failure here (e.g. another instance holding the write lock) must never stop the app —
+// the data is untouched and the next start tries again.
+try {
+  const migration = migrateDmThreadKeys();
+  if (migration.ran) {
+    console.log(
+      `[db] merged ${migration.groupsMerged} DM conversation(s): ` +
+        `threads ${migration.threadsBefore} → ${migration.threadsAfter}, ` +
+        `messages ${migration.messagesBefore} → ${migration.messagesAfter}` +
+        (migration.messagesDropped > 0 ? ` (${migration.messagesDropped} duplicates dropped)` : '') +
+        `; backup: ${migration.backupPath}`,
+    );
+  }
+} catch (err) {
+  console.warn(`[db] DM conversation migration skipped: ${(err as Error).message}`);
 }
