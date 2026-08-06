@@ -1,5 +1,6 @@
 import express from 'express';
 import crypto from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,12 +11,28 @@ import {
   getAnalysisForThread,
   setThreadStatus,
 } from './db.js';
+import { requestReanalysis } from './analyzer.js';
+import { analyzerHealth, listWorkspaceHealth } from './health.js';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const publicDir = path.join(projectRoot, 'public');
 const indexHtmlPath = path.join(publicDir, 'index.html');
 
 const VALID_STATUSES = new Set(['new', 'seen', 'done']);
+
+/** Wall-clock start of this process — reported by /api/status so the UI can say "since". */
+const STARTED_AT = new Date().toISOString();
+
+/** Best-effort app version for /api/status; absent is fine, never fatal. */
+const APP_VERSION: string | null = (() => {
+  try {
+    const pkg: unknown = JSON.parse(readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
+    const v = (pkg as { version?: unknown }).version;
+    return typeof v === 'string' ? v : null;
+  } catch {
+    return null;
+  }
+})();
 
 /** Literal string in public/index.html that is swapped for the real token when we serve '/'. */
 const TOKEN_PLACEHOLDER = '__COPILOT_TOKEN__';
@@ -83,8 +100,6 @@ export function startServer(port: number): Promise<void> {
     next();
   });
 
-  app.use(express.json());
-
   // Token-injected UI. Registered before express.static so the raw placeholder file is
   // never served for '/' or '/index.html'.
   app.get('/', (_req, res) => {
@@ -101,6 +116,31 @@ export function startServer(port: number): Promise<void> {
       return;
     }
     next();
+  });
+
+  // Body parsing runs AFTER authentication and only under /api. Mounted globally and
+  // first (as it was), a malformed body reached the parser's error path before the
+  // token was ever checked, so an unauthenticated caller could tell a 400 from a 401.
+  app.use('/api', express.json({ limit: '256kb' }));
+  // (its parse failures are turned into JSON by the /api error handler at the bottom)
+
+  /**
+   * Health of the moving parts, in a shape the UI can render in plain English.
+   * Everything here is read from the in-process registry (src/health.ts) — no polling,
+   * no subprocess, no secrets. `workspaces[].registered:false` means ingest has not
+   * reported yet, which is deliberately different from claiming a connection.
+   */
+  app.get('/api/status', (_req, res) => {
+    try {
+      res.json({
+        analyzer: analyzerHealth(),
+        server: { startedAt: STARTED_AT, version: APP_VERSION, now: new Date().toISOString() },
+        workspaces: listWorkspaceHealth(),
+      });
+    } catch (err) {
+      console.error('[server] /api/status failed:', err);
+      res.status(500).json({ error: 'internal error' });
+    }
   });
 
   app.get('/api/feed', (_req, res) => {
@@ -159,8 +199,64 @@ export function startServer(port: number): Promise<void> {
     }
   });
 
+  /**
+   * Ask for one thread to be re-analyzed now: clears its failure backoff and puts it at
+   * the front of the analyzer queue. It does NOT run the analysis inline — the analyzer
+   * stays strictly one-at-a-time, so this only ever enqueues.
+   */
+  app.post('/api/thread/:id/reanalyze', (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      res.status(400).json({ error: 'invalid thread id' });
+      return;
+    }
+    try {
+      const result = requestReanalysis(id);
+      if (!result.ok) {
+        if (result.reason === 'unknown_thread') {
+          res.status(404).json({ error: 'thread not found' });
+          return;
+        }
+        res.status(503).json({ error: 'analyzer is turned off' });
+        return;
+      }
+      res.json({ ok: true, id, queued: result.queued });
+    } catch (err) {
+      console.error('[server] reanalyze failed:', err);
+      res.status(500).json({ error: 'internal error' });
+    }
+  });
+
   // index: false so a bare '/' can never fall through to the un-injected file on disk.
   app.use(express.static(publicDir, { index: false }));
+
+  /**
+   * /api errors answer in JSON, never as Express's default HTML stack-trace page
+   * (which is both unparseable by the UI and a detail leak). Registered last so it
+   * catches body-parser failures and anything a route forwards. Four params — that is
+   * what marks a middleware as an error handler in Express.
+   */
+  app.use(
+    '/api',
+    (err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+      if (res.headersSent) {
+        next(err);
+        return;
+      }
+      const e = err as { type?: string; status?: number } | null;
+      if (e?.type === 'entity.parse.failed' || err instanceof SyntaxError) {
+        res.status(400).json({ error: 'invalid JSON' });
+        return;
+      }
+      if (e?.type === 'entity.too.large') {
+        res.status(413).json({ error: 'request body too large' });
+        return;
+      }
+      console.error('[server] unhandled /api error:', err);
+      const status = typeof e?.status === 'number' && e.status >= 400 && e.status < 600 ? e.status : 500;
+      res.status(status).json({ error: 'internal error' });
+    },
+  );
 
   return new Promise((resolve, reject) => {
     const server = app.listen(port, '127.0.0.1', () => {

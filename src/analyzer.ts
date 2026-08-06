@@ -22,11 +22,24 @@ import {
 import { workspaces } from './config.js';
 import {
   getMessagesForThread,
+  getThreadById,
   listThreadsNeedingAnalysis,
   upsertAnalysis,
   type MessageRow,
   type ThreadRow,
 } from './db.js';
+import {
+  ClassifiedError,
+  analyzerHealth,
+  analyzerRunFailed,
+  analyzerRunStarted,
+  analyzerRunSucceeded,
+  classifyAnalyzerError,
+  setAnalyzerDisabled,
+  setAnalyzerQueued,
+  type AnalyzerErrorKind,
+  type AnalyzerFailure,
+} from './health.js';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -383,11 +396,16 @@ async function runAnalysisQuery(prompt: string): Promise<QueryOutcome> {
   }
 
   if (resultText === null) {
-    if (failure === null && abort.signal.aborted) {
+    const timedOut = abort.signal.aborted;
+    if (failure === null && timedOut) {
       failure = `timed out after ${QUERY_TIMEOUT_MS / 1000}s`;
     }
     const stderrNote = lastStderr !== '' ? ` [stderr: ${lastStderr}]` : '';
-    throw new Error(`${failure ?? 'stream ended without a result'}${stderrNote}`);
+    const text = `${failure ?? 'stream ended without a result'}${stderrNote}`;
+    // Our own abort is the only thing that cancels this query, so an aborted signal
+    // means "timeout" with certainty. Everything else is SDK/CLI wording and gets
+    // bucketed by classifyAnalyzerError() (text matching — see health.ts).
+    throw timedOut ? new ClassifiedError('timeout', text) : new Error(text);
   }
   return { sessionId, resultText };
 }
@@ -405,7 +423,16 @@ async function analyzeThread(thread: ThreadRow): Promise<void> {
   const myUserId = await myUserIdFor(thread.workspace);
   const prompt = buildPrompt(thread, messages, myUserId);
   const { sessionId, resultText } = await runAnalysisQuery(prompt);
-  const analysis = parseAnalysis(resultText);
+
+  // "Claude answered, but not in the shape we asked for" is a different problem from
+  // "Claude never answered", and the user is told so — tag it structurally rather
+  // than hoping the message text matches a pattern later.
+  let analysis: ParsedAnalysis;
+  try {
+    analysis = parseAnalysis(resultText);
+  } catch (err) {
+    throw new ClassifiedError('bad_output', err instanceof Error ? err.message : String(err));
+  }
 
   upsertAnalysis({
     threadId: thread.id,
@@ -427,9 +454,34 @@ async function analyzeThread(thread: ThreadRow): Promise<void> {
 // ---------- scheduler ----------
 
 let inFlight = false;
+let disabled = false;
 const lastAttemptAt = new Map<number, number>(); // thread id -> epoch ms (failure backoff)
 
+/**
+ * Threads the user explicitly asked to re-analyze (POST /api/thread/:id/reanalyze).
+ * They jump the queue and skip both the debounce and the failure backoff — but never
+ * the one-at-a-time rule: they are picked by the same pickNext()/tick() path.
+ */
+const forced = new Set<number>();
+
+/** Backlog size for GET /api/status: threads needing analysis ∪ forced requests. */
+function refreshQueueDepth(): void {
+  try {
+    const ids = new Set(listThreadsNeedingAnalysis().map((t) => t.id));
+    for (const id of forced) ids.add(id);
+    setAnalyzerQueued(ids.size);
+  } catch {
+    // db hiccup — keep the previous number rather than reporting a false 0
+  }
+}
+
 function pickNext(): ThreadRow | null {
+  // User-requested re-analyses win, regardless of debounce/backoff/staleness.
+  for (const id of forced) {
+    forced.delete(id); // one attempt per request; failures fall back to normal backoff
+    const requested = getThreadById(id);
+    if (requested) return requested;
+  }
   const nowSec = Date.now() / 1000;
   const nowMs = Date.now();
   for (const thread of listThreadsNeedingAnalysis()) {
@@ -450,30 +502,86 @@ function pruneAttempts(): void {
   }
 }
 
+/**
+ * A silent failure is worse than a loud one. Every failure gets a compact line; the
+ * first of each new kind also gets a block that says, in plain English, what broke
+ * and what to do — the same words the UI shows, so terminal and window agree.
+ */
+let lastLoggedKind: AnalyzerErrorKind | null = null;
+function logFailure(threadId: number, failure: AnalyzerFailure): void {
+  console.warn(
+    `[analyzer] #${threadId} analysis failed (${failure.kind}): ${failure.detail} — retrying in ~5m`,
+  );
+  if (failure.kind !== lastLoggedKind) {
+    lastLoggedKind = failure.kind;
+    console.warn(
+      `\n  ==> Slack Copilot: messages are NOT being prioritized right now.\n` +
+        `      ${failure.message}\n` +
+        `      ${failure.hint}\n` +
+        `      (the app window shows this too — GET /api/status, kind "${failure.kind}")\n`,
+    );
+  }
+}
+
 function tick(): void {
   if (inFlight) return; // strictly one analysis at a time
   const thread = pickNext();
-  if (thread === null) return;
+  if (thread === null) {
+    refreshQueueDepth();
+    return;
+  }
 
   inFlight = true;
   lastAttemptAt.set(thread.id, Date.now());
+  analyzerRunStarted(thread.id);
+  refreshQueueDepth();
   analyzeThread(thread)
     .then(() => {
       // Success clears the backoff so a fresh reply can re-analyze promptly.
       lastAttemptAt.delete(thread.id);
+      analyzerRunSucceeded();
+      lastLoggedKind = null; // a later recurrence deserves a loud line again
     })
     .catch((err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`[analyzer] #${thread.id} analysis failed: ${msg} — retrying in ~5m`);
+      const failure = classifyAnalyzerError(err);
+      analyzerRunFailed(failure);
+      logFailure(thread.id, failure);
     })
     .finally(() => {
       inFlight = false;
       pruneAttempts();
+      refreshQueueDepth();
     });
+}
+
+export type ReanalyzeResult =
+  | { ok: true; queued: number }
+  | { ok: false; reason: 'unknown_thread' | 'disabled' };
+
+/**
+ * Clear a thread's failure backoff and ask for it to be analyzed now.
+ * Backs POST /api/thread/:id/reanalyze. Serial-safe: it only enqueues, and the
+ * scheduler still runs at most one analysis at a time.
+ */
+export function requestReanalysis(threadId: number): ReanalyzeResult {
+  if (disabled) return { ok: false, reason: 'disabled' };
+  if (!Number.isInteger(threadId) || threadId <= 0) return { ok: false, reason: 'unknown_thread' };
+  if (!getThreadById(threadId)) return { ok: false, reason: 'unknown_thread' };
+
+  lastAttemptAt.delete(threadId); // drop the 5-minute failure backoff
+  forced.add(threadId);
+  refreshQueueDepth();
+  // Next macrotask, so the HTTP response is already on its way. If an analysis is in
+  // flight, tick() returns immediately and the normal 15s heartbeat picks this up.
+  setTimeout(tick, 0).unref();
+  return { ok: true, queued: analyzerHealth().queued };
 }
 
 export function startAnalyzer(): void {
   if (process.env.ANALYZER_DISABLED === '1') {
+    disabled = true;
+    setAnalyzerDisabled();
+    refreshQueueDepth();
     console.log('[analyzer] disabled (ANALYZER_DISABLED=1) — threads will not be ranked');
     return;
   }
@@ -481,5 +589,6 @@ export function startAnalyzer(): void {
     `[analyzer] started — tick ${TICK_MS / 1000}s, debounce ${DEBOUNCE_S}s, serial, ` +
       `read-only MCP tools only`,
   );
+  refreshQueueDepth();
   setInterval(tick, TICK_MS).unref();
 }

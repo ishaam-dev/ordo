@@ -48,7 +48,10 @@
   .st i{width:7px;height:7px;border-radius:50%;display:inline-block;flex:none}
   .st i.ok{background:var(--ok)} .st i.warn{background:var(--warn)} .st i.err{background:var(--p0)}
   .queue{font-family:var(--mono);font-size:11px;color:var(--text-3);
-    border:1px solid var(--border);border-radius:10px;padding:1px 8px;white-space:nowrap}
+    border:1px solid var(--border);border-radius:10px;padding:1px 8px;white-space:nowrap;cursor:help}
+  .queue.busy{color:var(--accent);border-color:rgba(76,141,255,.45)}
+  .queue.errq{color:var(--p0);border-color:rgba(248,81,73,.5)}
+  .queue.warnq{color:var(--warn);border-color:rgba(227,179,65,.5)}
   .helpbtn{font-family:var(--mono);font-size:11px;color:var(--text-3);background:none;
     border:1px solid var(--border);border-radius:4px;padding:1px 7px;cursor:pointer}
   .helpbtn:hover{color:var(--text)}
@@ -60,6 +63,30 @@
   }
   .strip.on{display:block}
   .strip.err{background:rgba(248,81,73,.10);border-bottom-color:rgba(248,81,73,.4);color:var(--p0)}
+  .strip.info{background:rgba(76,141,255,.10);border-bottom-color:rgba(76,141,255,.35);color:var(--accent)}
+
+  /* setup banner — persistent and prominent, but still not modal: the feed stays
+     fully usable behind it. Only shown for a fault a human must fix by hand. */
+  .setupbanner{
+    flex:none;display:none;gap:11px;align-items:flex-start;
+    background:linear-gradient(rgba(248,81,73,.12),rgba(248,81,73,.12)),var(--surface);
+    border-bottom:1px solid rgba(248,81,73,.45);padding:10px 14px;
+  }
+  .setupbanner.on{display:flex}
+  .setupbanner .sbicon{flex:none;font-size:14px;line-height:1.4;color:var(--p0)}
+  .setupbanner .sbmain{min-width:0;flex:1}
+  .setupbanner .sbtitle{font-size:13px;font-weight:700;color:var(--text)}
+  .setupbanner .sbsub{font-size:12px;color:var(--text-2);margin-top:3px;line-height:1.5}
+  .cmdrow{display:flex;align-items:center;gap:8px;margin-top:7px;flex-wrap:wrap}
+  .cmdrow .lead{font-size:12px;color:var(--text-2)}
+  /* user-select:all = one click selects the whole command, ⌘C then works */
+  .cmd{font-family:var(--mono);font-size:12px;color:var(--text);background:var(--bg);
+    border:1px solid var(--border);border-radius:5px;padding:3px 9px;white-space:nowrap;
+    user-select:all;-webkit-user-select:all;cursor:text}
+  .copybtn{border:1px solid var(--border);background:var(--surface);color:var(--text-2);
+    border-radius:5px;padding:3px 10px;font-size:11.5px;cursor:pointer;font-family:inherit;flex:none}
+  .copybtn:hover{color:var(--text);border-color:var(--text-3)}
+  .copybtn.done{color:var(--ok);border-color:rgba(63,185,80,.6)}
 
   /* ================= 3-pane layout ================= */
   .main{flex:1;display:grid;grid-template-columns:380px minmax(480px,1fr) 400px;min-height:0;position:relative}
@@ -134,6 +161,8 @@
   .spark{color:var(--accent);font-size:10px;flex:none}
   .why{color:var(--text-2);overflow:hidden;text-overflow:ellipsis;font-size:12px}
   .card.stale .why{opacity:.6}
+  /* honest replacement for the shimmer when nothing is actually running */
+  .why.waiting{color:var(--text-3);font-style:italic}
   .why.shimmer{font-style:italic;
     background:linear-gradient(90deg,var(--text-3) 40%,var(--text-2) 50%,var(--text-3) 60%);
     background-size:200% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;
@@ -208,6 +237,9 @@
   .ameta{display:flex;gap:6px;align-items:center;border-top:1px solid var(--border);
     padding:6px 14px;font-family:var(--mono);font-size:10.5px;color:var(--text-3);flex-wrap:wrap}
   .ameta .muted-link{color:var(--text-3);text-decoration:underline dotted;cursor:help}
+  .ameta .metabtn{background:none;border:none;padding:0;color:var(--text-3);cursor:pointer;
+    font:inherit;text-decoration:underline dotted}
+  .ameta .metabtn:hover{color:var(--accent)}
   .analysis.pending .abody{color:var(--text-3)}
   .askel{height:9px;border-radius:3px;background:var(--surface-2);margin:8px 0;animation:sk 1.4s ease-in-out infinite}
 
@@ -301,6 +333,8 @@
     </div>
     <div class="statuses" id="statuses"></div>
   </div>
+
+  <div class="setupbanner" id="setupbanner"></div>
 
   <div class="strip" id="strip"></div>
 
@@ -679,15 +713,59 @@ const state = {
   knownIds: new Set(),
   chatSeed: '',
   chatNote: '',
+  status: null,            // last /api/status payload (analyzer + server + workspaces)
+  statusError: null,
+  reanalyze: new Map(),    // thread id -> 'busy' | 'queued' (transient UI state)
 };
 
 const feedListEl = document.getElementById('feedlist');
 const threadEl = document.getElementById('thread');
 const chatEl = document.getElementById('chat');
 const stripEl = document.getElementById('strip');
+const bannerEl = document.getElementById('setupbanner');
 const statusesEl = document.getElementById('statuses');
 const overlayEl = document.getElementById('overlay');
 const cardEls = new Map();
+
+/* ------------------------- analyzer health helpers ------------------------ */
+/* Everything the page says about "is this thing working?" comes from
+   /api/status. When it has not loaded (or the route is missing on an older
+   server) these all return null/false and the UI keeps its previous behaviour. */
+
+function analyzerInfo() {
+  const a = state.status && state.status.analyzer;
+  return a && typeof a === 'object' ? a : null;
+}
+function analyzerErr() {
+  const a = analyzerInfo();
+  return a && a.lastError && typeof a.lastError === 'object' ? a.lastError : null;
+}
+/** True when no thread is going to get prioritized until something changes. */
+function analyzerStalled() {
+  const a = analyzerInfo();
+  return !!a && (a.state === 'error' || a.state === 'disabled');
+}
+/** One plain sentence for whatever is wrong, or null when all is well. */
+function analyzerTrouble() {
+  const a = analyzerInfo();
+  if (!a) return null;
+  const e = analyzerErr();
+  if (e) return { kind: e.kind, message: String(e.message || ''), hint: String(e.hint || '') };
+  if (a.state === 'disabled') {
+    return {
+      kind: 'off',
+      message: 'Prioritizing is switched off',
+      hint: 'Messages still arrive and are kept; they just do not get an urgency rating.',
+    };
+  }
+  return null;
+}
+/** Signature so sig-gated renders repaint when the health picture changes. */
+function analyzerSig() {
+  const a = analyzerInfo();
+  const e = analyzerErr();
+  return a ? [a.state, a.queued, a.currentThreadId, e ? e.kind + '|' + e.at : null].join('~') : 'none';
+}
 
 function urgencyOf(it) { return it && RANK[it.urgency] !== undefined ? it.urgency : null; }
 function itemById(id) { return state.items.find((i) => i.id === id) || null; }
@@ -761,6 +839,54 @@ async function loadFeed() {
     renderStrip();
     renderStatuses();
   }
+}
+
+/** Health of the background worker, polled alongside the feed. A failure here is
+ *  never fatal to the page — the feed stays fully usable. */
+async function loadStatus() {
+  try {
+    const s = await api('/api/status');
+    state.status = s && typeof s === 'object' ? s : null;
+    state.statusError = null;
+  } catch (err) {
+    // Leave the last known status on screen rather than flickering to "fine".
+    state.statusError = err && err.message ? err.message : 'unknown error';
+  }
+  renderBanner();
+  renderStrip();
+  renderStatuses();
+  renderFeed();
+  renderThread();
+}
+
+/** Ask the server to re-check one thread now (clears its retry backoff). */
+async function reanalyze(id) {
+  if (state.reanalyze.get(id) === 'busy') return;
+  state.reanalyze.set(id, 'busy');
+  flashStrip('Asking Claude to look at this message again…', 'info');
+  renderThread();
+  try {
+    await api('/api/thread/' + id + '/reanalyze', { method: 'POST' });
+    state.reanalyze.set(id, 'queued');
+    renderThread();
+    loadStatus();
+    setTimeout(() => { state.reanalyze.delete(id); renderThread(); }, 2500);
+  } catch (err) {
+    state.reanalyze.delete(id);
+    renderThread();
+    const code = err && err.message ? err.message : '';
+    flashStrip(code === 'HTTP 503'
+      ? 'Prioritizing is switched off, so this message cannot be re-checked right now.'
+      : code === 'HTTP 404'
+        ? 'This message is no longer in the list, so it cannot be re-checked.'
+        : 'Could not ask Claude to re-check this message. Try again in a moment.');
+  }
+}
+
+/** Re-analyze control shared by the analysis card and the ⋯ menu. */
+function reanalyzeLabel(id, idle) {
+  const st = state.reanalyze.get(id);
+  return st === 'busy' ? 'Asking Claude…' : st === 'queued' ? 'Queued ✓' : idle;
 }
 
 /** The feed endpoint has no covered_through_ts / analyzed_at, so per-thread
@@ -880,8 +1006,8 @@ function openInSlack(id) {
 }
 
 let stripFlash = null;
-function flashStrip(msg) {
-  stripFlash = msg;
+function flashStrip(msg, tone) {
+  stripFlash = { msg: msg, tone: tone || 'warn' };
   renderStrip();
   clearTimeout(flashStrip._t);
   flashStrip._t = setTimeout(() => { stripFlash = null; renderStrip(); }, 4000);
@@ -890,7 +1016,91 @@ function flashStrip(msg) {
 /* ================================ render ================================= */
 
 function renderAll() {
-  renderStatuses(); renderStrip(); renderFeed(); renderThread(); renderChat(); renderTitleBadge();
+  renderStatuses(); renderBanner(); renderStrip(); renderFeed(); renderThread(); renderChat(); renderTitleBadge();
+}
+
+/* --------------------------- setup banner (auth) --------------------------- */
+
+/** Copy to the clipboard, with a fallback that at least selects the text. */
+function copyCommand(text, btn, cmdNode) {
+  const ok = () => {
+    btn.textContent = 'Copied';
+    btn.classList.add('done');
+    setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('done'); }, 1800);
+  };
+  const selectInstead = () => {
+    try {
+      const r = document.createRange();
+      r.selectNodeContents(cmdNode);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(r);
+    } catch (_) {}
+    btn.textContent = 'Press ⌘C';
+    setTimeout(() => { btn.textContent = 'Copy'; }, 2500);
+  };
+  const legacy = () => {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      const done = document.execCommand('copy');
+      document.body.removeChild(ta);
+      if (done) ok(); else selectInstead();
+    } catch (_) { selectInstead(); }
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(ok, legacy);
+  } else {
+    legacy();
+  }
+}
+
+// Rebuilt only when the situation changes, so the 5s poll never resets the
+// "Copied" confirmation or a half-made text selection under the user's cursor.
+let bannerSig = null;
+function renderBanner() {
+  const e = analyzerErr();
+  const on = !!(e && e.kind === 'auth');
+  const cmd = on ? String(e.command || 'claude auth login') : '';
+  const sig = on ? 'auth:' + cmd : 'off';
+  if (bannerSig === sig) return;
+  bannerSig = sig;
+
+  if (!on) {
+    bannerEl.className = 'setupbanner';
+    bannerEl.replaceChildren();
+    return;
+  }
+  bannerEl.className = 'setupbanner on';
+
+  const icon = el('div', 'sbicon', '●');
+  const main = el('div', 'sbmain');
+  main.appendChild(el('div', 'sbtitle', "Claude isn't signed in — items can't be prioritized yet."));
+  main.appendChild(el('div', 'sbsub',
+    'Your Slack messages are still arriving and nothing is lost. Until Claude is signed in on this Mac, ' +
+    'no message gets an urgency rating or a summary.'));
+
+  const row = el('div', 'cmdrow');
+  row.appendChild(el('span', 'lead', 'Open Terminal and run:'));
+  const cmdNode = el('code', 'cmd', cmd);
+  cmdNode.title = 'click to select, then copy';
+  row.appendChild(cmdNode);
+  const copy = el('button', 'copybtn', 'Copy');
+  copy.title = 'copy this command';
+  copy.addEventListener('click', () => copyCommand(cmd, copy, cmdNode));
+  row.appendChild(copy);
+  main.appendChild(row);
+
+  main.appendChild(el('div', 'sbsub',
+    'Then come back here — prioritizing starts again on its own within a few minutes, ' +
+    'or use Re-analyze on a message to retry it straight away.'));
+
+  bannerEl.replaceChildren(icon, main);
 }
 
 function renderStatuses() {
@@ -898,7 +1108,8 @@ function renderStatuses() {
   state.items.forEach((i) => { if (!ws.has(i.workspace)) ws.set(i.workspace, i.team_name || i.workspace); });
   const pending = state.items.filter((i) => !urgencyOf(i) && i.status !== 'done').length;
   statusesEl.replaceChildren();
-  if (pending) statusesEl.appendChild(el('span', 'queue', 'analyzing ' + pending));
+  const chip = analyzerChip(pending);
+  if (chip) statusesEl.appendChild(chip);
   ws.forEach((name, key) => {
     const s = el('span', 'st');
     s.appendChild(wsBadge({ workspace: key, team_name: name }));
@@ -928,16 +1139,63 @@ function renderStatuses() {
     (state.lastOk ? ' · updated ' + new Date(state.lastOk).toLocaleTimeString() : '');
 }
 
+/** Top-bar health of the background worker: idle / prioritizing n / stopped.
+ *  Falls back to the old client-side count until /api/status has answered. */
+function analyzerChip(pendingFallback) {
+  const a = analyzerInfo();
+  if (!a) {
+    return pendingFallback ? el('span', 'queue', 'Claude · ' + pendingFallback + ' waiting') : null;
+  }
+  const queued = typeof a.queued === 'number' ? a.queued : pendingFallback;
+  const trouble = analyzerTrouble();
+  if (trouble) {
+    const cls = trouble.kind === 'off' ? 'queue warnq' : 'queue errq';
+    const label =
+      trouble.kind === 'auth' ? 'Claude · not signed in'
+        : trouble.kind === 'off' ? 'Claude · prioritizing off'
+          : 'Claude · paused';
+    const c = el('span', cls, label);
+    c.title = trouble.message + ' — ' + trouble.hint +
+      (queued ? '\n' + queued + ' message' + (queued === 1 ? '' : 's') + ' waiting.' : '');
+    return c;
+  }
+  if (a.state === 'analyzing') {
+    const c = el('span', 'queue busy', 'Claude · prioritizing' + (queued > 1 ? ' ' + queued : ''));
+    c.title = 'Reading a message now' + (queued > 1 ? ', ' + (queued - 1) + ' behind it.' : '.');
+    return c;
+  }
+  if (queued > 0) {
+    const c = el('span', 'queue', 'Claude · ' + queued + ' waiting');
+    c.title = 'Claude looks at a message about 45 seconds after the last reply lands.';
+    return c;
+  }
+  const c = el('span', 'queue', 'Claude · up to date');
+  c.title = a.lastOk ? 'Last message prioritized ' + (agoFromIso(a.lastOk) || 'recently') + '.'
+    : 'Nothing waiting to be prioritized.';
+  return c;
+}
+
 function renderStrip() {
   if (stripFlash) {
-    stripEl.className = 'strip on';
-    stripEl.textContent = '⚠ ' + stripFlash;
+    stripEl.className = 'strip on' + (stripFlash.tone === 'info' ? ' info' : '');
+    stripEl.textContent = (stripFlash.tone === 'info' ? '' : '⚠ ') + stripFlash.msg;
     return;
   }
   if (state.feedError) {
     stripEl.className = 'strip on err';
     stripEl.textContent = '⚠ Feed refresh failed (' + state.feedError + ') — showing last known data' +
       (state.lastOk ? ', updated ' + new Date(state.lastOk).toLocaleTimeString() : '') + '. Retrying…';
+    return;
+  }
+  // Analyzer trouble is ambient here — except the sign-in case, which gets the
+  // banner above instead (it needs a command the user can copy).
+  const trouble = analyzerTrouble();
+  if (trouble && trouble.kind !== 'auth') {
+    // amber for the faults that clear themselves, red for the ones that may not
+    const selfHealing = trouble.kind === 'rate_limit' || trouble.kind === 'timeout' ||
+      trouble.kind === 'bad_output' || trouble.kind === 'off';
+    stripEl.className = 'strip on' + (selfHealing ? '' : ' err');
+    stripEl.textContent = '⚠ ' + trouble.message + ' — ' + trouble.hint;
     return;
   }
   stripEl.className = 'strip';
@@ -975,7 +1233,7 @@ function cardFor(it) {
   const stale = isStale(it);
   const sig = JSON.stringify([u, it.status, it.why, it.last_activity, it.channel_name, it.kind,
     it.last_message && it.last_message.author_name, it.last_message && it.last_message.text,
-    stale, staleCount(it), it.team_name, state.cursor === it.id]);
+    stale, staleCount(it), it.team_name, state.cursor === it.id, analyzerStalled()]);
   if (c.dataset.sig !== sig) {
     c.dataset.sig = sig;
     paintCard(c, it, u, stale);
@@ -998,7 +1256,8 @@ function paintCard(c, it, u, stale) {
     r1.appendChild(chip);
   } else {
     const chip = el('span', 'chip pending', '…');
-    chip.title = 'not analyzed yet';
+    const trouble = analyzerTrouble();
+    chip.title = trouble ? trouble.message + ' — ' + trouble.hint : 'not prioritized yet';
     r1.appendChild(chip);
   }
   if (stale) {
@@ -1039,6 +1298,12 @@ function paintCard(c, it, u, stale) {
     const w = el('span', 'why', it.why);
     w.title = it.why;
     r3.appendChild(w);
+  } else if (analyzerStalled()) {
+    // Never shimmer when nothing is running — that reads as "work in progress".
+    const trouble = analyzerTrouble();
+    const w = el('span', 'why waiting', 'Waiting to be prioritized');
+    w.title = trouble ? trouble.message + ' — ' + trouble.hint : 'Waiting to be prioritized';
+    r3.appendChild(w);
   } else {
     r3.appendChild(el('span', 'why shimmer', 'Analyzing…'));
   }
@@ -1048,7 +1313,7 @@ function renderFeed() {
   if (!state.loaded && !state.items.length) {
     if (state.feedError) {
       const p = el('div', 'placeholder');
-      p.innerHTML = html`<b>Can't reach the feed</b>${state.feedError}<br>Retrying every ${POLL_MS / 1000}s — is <span class="kbd">npm run dev</span> still up?`;
+      p.innerHTML = html`<b>Can't reach your messages</b>Slack Copilot isn't answering (${state.feedError}).<br>Retrying every ${POLL_MS / 1000} seconds. If this stays, quit and reopen the app.`;
       feedListEl.replaceChildren(p);
     } else {
       feedListEl.replaceChildren(skeletonFeed());
@@ -1073,8 +1338,14 @@ function renderFeed() {
   const frag = document.createDocumentFragment();
   if (pending.length) {
     const g = el('div', 'group-label');
-    g.appendChild(el('span', 'spin', '…'));
-    g.appendChild(el('span', null, 'Analyzing · ' + pending.length));
+    if (analyzerStalled()) {
+      g.appendChild(el('span', null, 'Waiting to be prioritized · ' + pending.length));
+      const trouble = analyzerTrouble();
+      if (trouble) g.title = trouble.message + ' — ' + trouble.hint;
+    } else {
+      g.appendChild(el('span', 'spin', '…'));
+      g.appendChild(el('span', null, 'Analyzing · ' + pending.length));
+    }
     frag.appendChild(g);
     pending.forEach((it) => frag.appendChild(cardFor(it)));
   }
@@ -1132,7 +1403,8 @@ function renderThread() {
   const sig = JSON.stringify([it.id, it.status, it.last_activity, it.permalink, it.message_count,
     d ? d.messages.length : -1, d && d.messages.length ? d.messages[d.messages.length - 1].ts : null,
     a && [a.urgency, a.why, a.summary, a.suggested_action, a.context_notes, a.covered_through_ts, a.analyzed_at],
-    state.detailLoading, state.detailError, collapsedSet().has(it.id), Math.floor(Date.now() / 60000)]);
+    state.detailLoading, state.detailError, collapsedSet().has(it.id), Math.floor(Date.now() / 60000),
+    analyzerSig(), state.reanalyze.get(it.id) || null]);
   if (threadEl.dataset.sig === sig) return;
   threadEl.dataset.sig = sig;
 
@@ -1195,9 +1467,13 @@ function threadHeader(it, d) {
     const unseen = el('button', null, 'Mark unseen (u)');
     unseen.addEventListener('click', () => { setStatus(it.id, 'new'); menu.remove(); });
     menu.appendChild(unseen);
-    const re = el('button', null, 'Re-analyze');
-    re.disabled = true;
-    re.title = 'needs POST /api/thread/:id/reanalyze — the analyzer re-runs on new activity for now';
+    const re = el('button', null, reanalyzeLabel(it.id, 'Re-analyze'));
+    const busy = !!state.reanalyze.get(it.id);
+    re.disabled = busy;
+    re.title = busy
+      ? 'already asked — Claude will pick this up shortly'
+      : 'ask Claude to look at this message again now';
+    re.addEventListener('click', () => { reanalyze(it.id); menu.remove(); });
     menu.appendChild(re);
     act.appendChild(menu);
     setTimeout(() => document.addEventListener('click', function off() {
@@ -1313,14 +1589,33 @@ function analysisCard(it, d, a) {
 
   if (!a) {
     card.classList.add('pending');
+    const trouble = analyzerTrouble();
+    const stalled = analyzerStalled() && !!trouble;
     const body = el('div', 'abody');
     const why = el('div', 'awhy');
     why.appendChild(el('span', 'chip pending', '…'));
-    why.appendChild(el('span', 'whytext', d ? 'Analyzing this thread…' : 'Loading…'));
+    why.appendChild(el('span', 'whytext',
+      !d ? 'Loading…' : stalled ? 'Waiting to be prioritized' : 'Analyzing this thread…'));
     body.appendChild(why);
-    [70, 92, 55].forEach((w) => { const s = el('div', 'askel'); s.style.width = w + '%'; body.appendChild(s); });
+    if (stalled) {
+      // Say what is actually happening instead of animating a skeleton at someone.
+      const s = el('div', 'asec');
+      s.appendChild(el('b', null, trouble.message));
+      s.appendChild(document.createTextNode(' — ' + trouble.hint));
+      body.appendChild(s);
+      body.appendChild(el('div', 'asec',
+        'The message itself is safe and the conversation below is complete. Only the urgency ' +
+        'rating and summary are missing.'));
+    } else {
+      [70, 92, 55].forEach((w) => { const s = el('div', 'askel'); s.style.width = w + '%'; body.appendChild(s); });
+    }
     card.appendChild(body);
-    card.appendChild(el('div', 'ameta', 'the analyzer picks threads up ~45s after the last message'));
+    const meta = el('div', 'ameta');
+    meta.appendChild(el('span', null, stalled
+      ? 'it keeps its place in the list until Claude can rate it'
+      : 'Claude picks threads up ~45s after the last message'));
+    meta.appendChild(reanalyzeControl(it.id));
+    card.appendChild(meta);
     return card;
   }
 
@@ -1379,11 +1674,19 @@ function analysisCard(it, d, a) {
   const ago = agoFromIso(a.analyzed_at);
   meta.appendChild(el('span', null, 'analyzed ' + (ago || 'at an unknown time')));
   if (a.covered_through_ts) meta.appendChild(el('span', null, '· covered through ' + clockTime(a.covered_through_ts)));
-  const re = el('span', 'muted-link', '· re-analyze');
-  re.title = 'needs POST /api/thread/:id/reanalyze — for now the analyzer re-runs itself when new replies arrive';
-  meta.appendChild(re);
+  meta.appendChild(reanalyzeControl(it.id));
   card.appendChild(meta);
   return card;
+}
+
+/** The "· re-analyze" affordance in an analysis card's meta row. */
+function reanalyzeControl(id) {
+  const st = state.reanalyze.get(id);
+  if (st) return el('span', 'muted-link', '· ' + (st === 'busy' ? 'asking Claude…' : 'queued ✓'));
+  const re = el('button', 'metabtn', '· re-analyze');
+  re.title = 'ask Claude to look at this message again now';
+  re.addEventListener('click', (e) => { e.stopPropagation(); reanalyze(id); });
+  return re;
 }
 
 /* -------------------------------- chat ----------------------------------- */
@@ -1638,13 +1941,14 @@ if (hashMatch) state.cursor = Number(hashMatch[1]);
 renderFeed();
 renderThread();
 renderTitleBadge();
+loadStatus();
 loadFeed().then(() => { if (state.cursor != null && !state.detail) loadDetail(state.cursor); });
 
 // 5s while the tab is visible; still every ~30s when it is not, so a background
 // tab (or an embedded view that always reports itself hidden) never goes stale.
 let tick = 0;
-setInterval(() => { tick++; if (!document.hidden || tick % 6 === 0) loadFeed(); }, POLL_MS);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) loadFeed(); });
+setInterval(() => { tick++; if (!document.hidden || tick % 6 === 0) { loadFeed(); loadStatus(); } }, POLL_MS);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { loadFeed(); loadStatus(); } });
 // relative timestamps drift; repaint the feed once a minute even without new data
 setInterval(() => { cardEls.forEach((c) => { c.dataset.sig = ''; }); renderFeed(); }, 60000);
 </script>
