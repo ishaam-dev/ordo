@@ -38,35 +38,25 @@ authentication dance that involves pasting a slash command into Slack and readin
 code back out. So the intended way to install this is to let a coding agent do it
 with you.
 
-**Any coding agent that can run terminal commands will do** — Claude Code, Codex
-CLI, Cursor, Gemini CLI, Copilot CLI, or whatever you already use. The prompt below
-is written for all of them.
+**Use Claude Code.** Not out of loyalty — the app itself runs on it. Rating your
+conversations is done by Claude through your own Claude Code login, so it has to be
+installed and signed in on this Mac either way. Setting up with anything else just
+means installing Claude Code at the end anyway.
 
-> **One thing that is not optional:** the finished app runs Claude through Claude
-> Code on your Mac — that is how it reads your conversations and rates them. So
-> Claude Code has to be installed and signed in *whatever agent you use to set this
-> up*. If you set it up with Codex, you will still end up installing Claude Code;
-> the prompt handles that and explains it when it gets there.
+If you don't have it yet: [install Claude Code](https://claude.com/claude-code),
+then run `claude auth login` once.
 
-You don't need to download anything first — the agent fetches the code itself.
-Open a terminal in whatever folder you keep projects in, start your agent (for
-Claude Code that's typing `claude`; for others, whatever launches it), and paste
-the block below. Then just answer its questions — it does everything else.
-
-If your agent needs permission to run commands or edit files, say yes when it asks;
-it cannot do the setup otherwise.
+You don't need to download this project first — the agent fetches it itself. Open a
+terminal in whatever folder you keep projects in, type `claude`, and paste the block
+below. Then just answer its questions — it does everything else. Say yes when it
+asks permission to run commands or edit files; it can't do the setup otherwise.
 
 ````text
 You are setting up an app called "Slack Copilot" on my Mac.
 
-You can be any coding agent — Claude Code, Codex, Cursor, Gemini, whatever. What
-you need is the ability to run terminal commands and read and write files in a
-folder. If you cannot do one of those, say so now and stop, rather than telling me
-to run things you could have run yourself.
-
-Note the app itself uses Claude Code at runtime (that's what reads and rates my
-Slack conversations), so Claude Code has to end up installed and signed in on this
-Mac even if you are not Claude. That's a dependency of the app, not of you.
+The finished app runs Claude through my local Claude Code login — that is what
+reads and rates my Slack conversations — so being signed in matters twice over: for
+you now, and for the app afterwards.
 
 The code lives at https://github.com/ishaam-dev/slack-copilot
 
@@ -126,12 +116,11 @@ each conversation is, and shows them in one prioritized list on my Mac.
   old, install it with `brew install node`. Homebrew puts Node in /opt/homebrew/bin,
   which isn't always on PATH — if a later command says "node: command not found",
   that's why.
-- Claude Code, installed and signed in (`claude auth status` → loggedIn true).
-  This is required no matter which agent you are: the finished app shells out to
-  Claude Code to read and rate my Slack conversations. If it isn't installed, walk
-  me through installing it, then have me run `claude auth login` — signing in is
-  mine to do, in a browser. There is no API key in this project and you should
-  never ask me for one.
+- Claude Code, signed in (`claude auth status` → loggedIn true). The app shells out
+  to Claude Code to read and rate my conversations, so this has to be true when we
+  finish, not just right now. If it reports not signed in, have me run
+  `claude auth login` — signing in is mine to do, in a browser. There is no API key
+  in this project and you should never ask me for one.
 - A Slack app in EACH workspace I want to watch — one app per workspace, so one or
   two of them. These don't exist yet: you are going to create them.
   **Create them with the Slack command-line tool** (`slack app install`), from the
@@ -308,7 +297,7 @@ by hand.
 |---|---|
 | **A Mac** | Apple Silicon (M1 or later). The packaged app is built for `mac-arm64` only. |
 | **Node 22 or newer** | `brew install node`. Homebrew puts it in `/opt/homebrew/bin`, which is not always on the PATH of a non-login shell — if `node -v` says "command not found" in some window, that is why. |
-| **Claude Code, signed in** | Install it, then run `claude auth login`. This is required even if you set the app up with a different agent — Slack Copilot runs Claude through *your* local Claude Code login — there is no API key anywhere in this project, and you are never asked for one. `claude auth status` should say `"loggedIn": true`. Expect this to use your Claude plan's allowance — every conversation gets analyzed, and if you hit a usage limit the app says so and resumes when it resets. |
+| **Claude Code, signed in** | Install it, then run `claude auth login`. Slack Copilot runs Claude through *your* local Claude Code login — there is no API key anywhere in this project, and you are never asked for one. `claude auth status` should say `"loggedIn": true`. Expect this to use your Claude plan's allowance — every conversation gets analyzed, and if you hit a usage limit the app says so and resumes when it resets. |
 | **One or two Slack workspaces** | The app has two slots, **A** and **B**. Fill in one if you only have one workspace, both if you have two. There is no slot C. |
 | **Permission to install an app in those workspaces** | ⚠️ **This is the blocker.** Many companies require an admin to approve every new Slack app. If yours does, the install step will offer you a **"Request to Install"** button instead of installing, and nothing works until a Slack admin approves it. Find out now, before you do the rest of the work: ask your Slack admin, or look at **Settings & administration → Manage apps** in Slack and see whether it says app approval is required. |
 
