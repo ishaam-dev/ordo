@@ -19,8 +19,8 @@ and no website to visit.
 
 ## Contents
 
+- [Set it up with an AI agent](#set-it-up-with-an-ai-agent) ← start here
 - [What you need before you start](#what-you-need-before-you-start)
-- [Set it up with an AI agent](#set-it-up-with-an-ai-agent) ← the easy way
 - [Set it up by hand](#set-it-up-by-hand)
 - [Using it, day to day](#using-it-day-to-day)
 - [How it works](#how-it-works)
@@ -28,22 +28,6 @@ and no website to visit.
 - [Known limitations](#known-limitations)
 - [When something looks wrong](#when-something-looks-wrong)
 - [Removing it](#removing-it)
-
----
-
-## What you need before you start
-
-**Read the last item first — it is the only thing that can stop you dead.**
-
-| | |
-|---|---|
-| **A Mac** | Apple Silicon (M1 or later). The packaged app is built for `mac-arm64` only. |
-| **Node 22 or newer** | `brew install node`. Homebrew puts it in `/opt/homebrew/bin`, which is not always on the PATH of a non-login shell — if `node -v` says "command not found" in some window, that is why. |
-| **Claude Code, signed in** | Install it, then run `claude auth login`. Slack Copilot runs Claude through *your* local Claude Code login — there is no API key anywhere in this project, and you are never asked for one. `claude auth status` should say `"loggedIn": true`. Expect this to use your Claude plan's allowance — every conversation gets analyzed, and if you hit a usage limit the app says so and resumes when it resets. |
-| **One or two Slack workspaces** | The app has two slots, **A** and **B**. Fill in one if you only have one workspace, both if you have two. There is no slot C. |
-| **Permission to install an app in those workspaces** | ⚠️ **This is the blocker.** Many companies require an admin to approve every new Slack app. If yours does, the install step will offer you a **"Request to Install"** button instead of installing, and nothing works until a Slack admin approves it. Find out now, before you do the rest of the work: ask your Slack admin, or look at **Settings & administration → Manage apps** in Slack and see whether it says app approval is required. |
-
-Setup takes about 20 minutes if nobody has to approve anything.
 
 ---
 
@@ -101,8 +85,29 @@ sentence first.
 === WHAT WE ARE BUILDING ===
 
 A local app that watches my Slack DMs and @-mentions, has Claude rate how urgent
-each conversation is, and shows them in one prioritized list on my Mac. It needs,
-per Slack workspace, its own small Slack app, and two tokens from that app.
+each conversation is, and shows them in one prioritized list on my Mac.
+
+=== WHAT IT NEEDS (check or install each of these with me) ===
+
+- Node 22 or newer. This is what the app runs on. If `node -v` is missing or too
+  old, install it with `brew install node`. Homebrew puts Node in /opt/homebrew/bin,
+  which isn't always on PATH — if a later command says "node: command not found",
+  that's why.
+- Claude Code, signed in (`claude auth status` → loggedIn true). The app runs Claude
+  through my own local login. There is no API key in this project and you should
+  never ask me for one.
+- A Slack app in EACH workspace I want to watch — one app per workspace, so one or
+  two of them. These don't exist yet: you are going to create them.
+  **Create them with the Slack command-line tool** (`slack app install`), from the
+  manifest.json already in this repo. Do NOT walk me through the web form at
+  api.slack.com to create an app — the CLI does it in one command and the web form
+  has a fiddly failure mode.
+  The CLI cannot do everything, though: after each app exists, two tokens have to
+  be copied out of that app's web page by hand. That part is mine, and you'll walk
+  me to the exact page and tell me exactly what to click.
+
+Your job is to guide me through all of that, in order, doing every part you can do
+yourself and stopping for the parts only I can do.
 
 === THE STEPS ===
 
@@ -252,6 +257,26 @@ the agent already has your terminal and your files. It works in other coding age
 too, but you may have to grant filesystem and terminal access first, and some
 agents will need you to run the commands yourself and paste back the output — in
 that case tell it so at the start, and it will adapt.
+
+---
+
+## What you need before you start
+
+The agent above checks all of this with you and installs what's missing — this
+table is here so you can see what you're getting into, and for anyone setting up
+by hand.
+
+**Read the last item first — it is the only thing that can stop you dead.**
+
+| | |
+|---|---|
+| **A Mac** | Apple Silicon (M1 or later). The packaged app is built for `mac-arm64` only. |
+| **Node 22 or newer** | `brew install node`. Homebrew puts it in `/opt/homebrew/bin`, which is not always on the PATH of a non-login shell — if `node -v` says "command not found" in some window, that is why. |
+| **Claude Code, signed in** | Install it, then run `claude auth login`. Slack Copilot runs Claude through *your* local Claude Code login — there is no API key anywhere in this project, and you are never asked for one. `claude auth status` should say `"loggedIn": true`. Expect this to use your Claude plan's allowance — every conversation gets analyzed, and if you hit a usage limit the app says so and resumes when it resets. |
+| **One or two Slack workspaces** | The app has two slots, **A** and **B**. Fill in one if you only have one workspace, both if you have two. There is no slot C. |
+| **Permission to install an app in those workspaces** | ⚠️ **This is the blocker.** Many companies require an admin to approve every new Slack app. If yours does, the install step will offer you a **"Request to Install"** button instead of installing, and nothing works until a Slack admin approves it. Find out now, before you do the rest of the work: ask your Slack admin, or look at **Settings & administration → Manage apps** in Slack and see whether it says app approval is required. |
+
+Setup takes about 20 minutes if nobody has to approve anything.
 
 ---
 
