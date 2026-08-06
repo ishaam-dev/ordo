@@ -5,118 +5,355 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Slack Copilot</title>
 <style>
-  :root {
-    --bg: #16181d;
-    --card: #1f232b;
-    --card-border: #2c313c;
-    --text: #e6e9ef;
-    --muted: #8b93a3;
-    --accent: #6ea8fe;
-    --p0: #f0564f;
-    --p1: #f08c3d;
-    --p2: #e3c33f;
-    --p3: #6f7787;
+  /* ================= tokens (docs/ux.md §2) ================= */
+  :root{
+    --bg:#0d1117; --surface:#151b23; --surface-2:#1d2530; --border:#2a313c;
+    --text:#e6edf3; --text-2:#9aa4b2; --text-3:#646d79;
+    --accent:#4c8dff; --ok:#3fb950; --warn:#e3b341;
+    --p0:#f85149; --p1:#f0883e; --p2:#d29922; --p3:#8b949e;
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
   }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    background: var(--bg);
-    color: var(--text);
-    font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--bg); color:var(--text);
+    font:13px/1.45 var(--sans);
+    min-width:860px; overflow-x:auto; overflow-y:hidden;
   }
-  header {
-    padding: 18px 24px;
-    border-bottom: 1px solid var(--card-border);
-    display: flex;
-    align-items: baseline;
-    gap: 12px;
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .mono{font-family:var(--mono)}
+  .app{display:flex;flex-direction:column;height:100vh}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:#252d38;border-radius:6px;border:2px solid var(--bg)}
+  ::-webkit-scrollbar-thumb:hover{background:#313b48}
+  ::-webkit-scrollbar-track{background:transparent}
+
+  /* ================= top bar ================= */
+  .topbar{
+    display:flex;align-items:center;gap:16px;padding:8px 14px;
+    border-bottom:1px solid var(--border);background:var(--surface);flex:none;
   }
-  header h1 { margin: 0; font-size: 18px; font-weight: 650; }
-  header .sub { color: var(--muted); font-size: 13px; }
-  main { max-width: 860px; margin: 0 auto; padding: 20px 16px 60px; }
-  .empty {
-    color: var(--muted);
-    text-align: center;
-    padding: 80px 0;
-    font-size: 15px;
+  .brand{font-weight:700;font-size:13px;flex:none;user-select:none}
+  .brand .dot{color:var(--accent)}
+  .tabs{display:flex;gap:2px}
+  .tab{padding:4px 10px;border-radius:6px;color:var(--text-2);cursor:pointer;font-size:12.5px;
+    background:none;border:none;font-family:inherit}
+  .tab:hover{color:var(--text)}
+  .tab.active{background:var(--surface-2);color:var(--text);font-weight:600}
+  .tab .count{color:var(--accent);font-family:var(--mono);font-size:11px;margin-left:4px}
+  .statuses{margin-left:auto;display:flex;align-items:center;gap:12px;font-size:11.5px;color:var(--text-2)}
+  .st{display:flex;align-items:center;gap:5px;white-space:nowrap}
+  .st i{width:7px;height:7px;border-radius:50%;display:inline-block;flex:none}
+  .st i.ok{background:var(--ok)} .st i.warn{background:var(--warn)} .st i.err{background:var(--p0)}
+  .queue{font-family:var(--mono);font-size:11px;color:var(--text-3);
+    border:1px solid var(--border);border-radius:10px;padding:1px 8px;white-space:nowrap}
+  .helpbtn{font-family:var(--mono);font-size:11px;color:var(--text-3);background:none;
+    border:1px solid var(--border);border-radius:4px;padding:1px 7px;cursor:pointer}
+  .helpbtn:hover{color:var(--text)}
+
+  /* ambient error strip — never modal (docs/ux.md §7) */
+  .strip{
+    flex:none;background:rgba(227,179,65,.10);border-bottom:1px solid rgba(227,179,65,.35);
+    color:var(--warn);font-size:12px;padding:4px 14px;display:none;
   }
-  .card {
-    background: var(--card);
-    border: 1px solid var(--card-border);
-    border-radius: 10px;
-    padding: 14px 16px;
-    margin-bottom: 12px;
+  .strip.on{display:block}
+  .strip.err{background:rgba(248,81,73,.10);border-bottom-color:rgba(248,81,73,.4);color:var(--p0)}
+
+  /* ================= 3-pane layout ================= */
+  .main{flex:1;display:grid;grid-template-columns:380px minmax(480px,1fr) 400px;min-height:0;position:relative}
+  body.chat-closed .main{grid-template-columns:380px minmax(480px,1fr) 0}
+  body.chat-closed .chat{display:none}
+  .pane{min-height:0;min-width:0;display:flex;flex-direction:column}
+  .feed{border-right:1px solid var(--border)}
+  .chat{border-left:1px solid var(--border);background:var(--surface)}
+  /* the one breakpoint: chat overlays the thread instead of squeezing it.
+     Fires at 1260px = 380 feed + 480 thread min + 400 chat, i.e. the exact width
+     below which the three-column grid would start clipping. */
+  @media (max-width:1260px){
+    .main{grid-template-columns:380px minmax(0,1fr) 0}
+    .chat{position:absolute;top:0;right:0;bottom:0;width:400px;z-index:20;
+      box-shadow:-10px 0 30px rgba(0,0,0,.5)}
   }
-  .card.seen { opacity: 0.75; }
-  .card.done { opacity: 0.45; }
-  .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  .badge {
-    flex: none;
-    font-size: 12px;
-    font-weight: 700;
-    padding: 2px 8px;
-    border-radius: 999px;
-    color: #16181d;
+
+  /* ================= feed ================= */
+  .feedlist{flex:1;overflow-y:auto;padding:6px}
+  .group-label{
+    font-size:10px;font-weight:700;letter-spacing:.08em;color:var(--text-3);
+    text-transform:uppercase;padding:8px 8px 2px;display:flex;align-items:center;gap:6px;user-select:none;
   }
-  .badge.P0 { background: var(--p0); color: #fff; }
-  .badge.P1 { background: var(--p1); }
-  .badge.P2 { background: var(--p2); }
-  .badge.P3 { background: var(--p3); color: #fff; }
-  .badge.none {
-    background: transparent;
-    color: var(--muted);
-    border: 1px dashed var(--muted);
+  .group-label .spin{color:var(--warn);animation:fade 1.6s ease-in-out infinite}
+  @keyframes fade{50%{opacity:.25}}
+  .card{
+    position:relative;background:var(--surface);border:1px solid var(--border);
+    border-radius:6px;padding:8px 10px 8px 14px;margin:4px 0;cursor:pointer;
   }
-  .where { color: var(--muted); font-size: 13px; }
-  .where .ws { color: var(--accent); font-weight: 600; }
-  .kind {
-    font-size: 11px;
-    color: var(--muted);
-    border: 1px solid var(--card-border);
-    border-radius: 4px;
-    padding: 1px 5px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-  .time { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
-  .snippet { margin: 8px 0 4px; }
-  .snippet .author { font-weight: 600; }
-  .snippet .text { color: var(--text); opacity: 0.9; }
-  .why { color: var(--muted); font-size: 13px; margin: 2px 0 8px; font-style: italic; }
-  .actions { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
-  .actions a { color: var(--accent); font-size: 13px; text-decoration: none; }
-  .actions a:hover { text-decoration: underline; }
-  .actions .nolink { color: var(--muted); font-size: 13px; text-decoration: line-through; }
-  button {
-    background: transparent;
-    color: var(--muted);
-    border: 1px solid var(--card-border);
-    border-radius: 6px;
-    padding: 3px 10px;
-    font-size: 12.5px;
-    cursor: pointer;
-    font-family: inherit;
-  }
-  button:hover { color: var(--text); border-color: var(--muted); }
-  .status-label { font-size: 12px; color: var(--muted); margin-left: auto; }
-  .count { color: var(--muted); font-size: 12px; }
+  .card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;
+    border-radius:6px 0 0 6px;background:var(--edge,transparent)}
+  .card:hover{background:var(--surface-2)}
+  .card.sel{background:var(--surface-2);outline:1px solid var(--accent);outline-offset:-1px}
+  .card.p0{--edge:var(--p0);background:linear-gradient(rgba(248,81,73,.06),rgba(248,81,73,.06)),var(--surface)}
+  .card.p0:hover,.card.p0.sel{background:linear-gradient(rgba(248,81,73,.06),rgba(248,81,73,.06)),var(--surface-2)}
+  .card.p1{--edge:var(--p1)} .card.p2{--edge:var(--p2)} .card.p3{--edge:var(--p3)}
+  .card.done{opacity:.45}
+  .card.pulse{animation:pulse .3s ease-out}
+  @keyframes pulse{from{background:rgba(76,141,255,.18)}}
+
+  .crow1{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-3);margin-bottom:3px}
+  .chip{font-family:var(--mono);font-size:10px;font-weight:700;border-radius:4px;
+    padding:0 5px;line-height:16px;flex:none;border:1px solid transparent}
+  .chip.c0{background:var(--p0);color:#0d1117}
+  .chip.c1{border-color:var(--p1);color:var(--p1)}
+  .chip.c2{border-color:var(--p2);color:var(--p2)}
+  .chip.c3{border-color:var(--p3);color:var(--p3)}
+  .chip.pending{border:1px dashed var(--text-3);color:var(--text-3)}
+  .stale-mark{color:var(--warn);font-size:12px;flex:none;cursor:help}
+  .ws{font-family:var(--mono);font-size:9px;font-weight:700;color:#0d1117;border-radius:3px;
+    width:14px;height:14px;display:inline-flex;align-items:center;justify-content:center;flex:none}
+  .chan{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-2);max-width:19ch;flex:none}
+  .kind{color:var(--text-3);flex:none}
+  .ctime{margin-left:auto;font-family:var(--mono);font-size:10.5px;flex:none;white-space:nowrap}
+  .hoverbtns{display:none;gap:2px;margin-left:6px;flex:none}
+  .card:hover .hoverbtns,.card.sel .hoverbtns{display:inline-flex}
+  .hbtn{border:1px solid var(--border);background:var(--surface);color:var(--text-2);
+    border-radius:4px;font-size:10px;line-height:15px;padding:0 5px;cursor:pointer;font-family:inherit}
+  .hbtn:hover{color:var(--text);border-color:var(--text-3)}
+
+  .crow2{display:flex;align-items:center;gap:6px;white-space:nowrap;overflow:hidden}
+  .udot{width:6px;height:6px;border-radius:50%;background:var(--accent);flex:none}
+  .card.seen .udot,.card.done .udot{display:none}
+  .ddone{display:none;color:var(--ok);font-size:11px;flex:none}
+  .card.done .ddone{display:inline}
+  .sender{font-weight:600;flex:none;max-width:16ch;overflow:hidden;text-overflow:ellipsis}
+  .snippet{color:var(--text);overflow:hidden;text-overflow:ellipsis}
+  .card.seen .sender,.card.seen .snippet,.card.done .sender,.card.done .snippet{color:var(--text-2);font-weight:400}
+  .card.seen .sender,.card.done .sender{font-weight:500}
+
+  .crow3{display:flex;gap:6px;align-items:center;white-space:nowrap;overflow:hidden;margin-top:2px}
+  .spark{color:var(--accent);font-size:10px;flex:none}
+  .why{color:var(--text-2);overflow:hidden;text-overflow:ellipsis;font-size:12px}
+  .card.stale .why{opacity:.6}
+  .why.shimmer{font-style:italic;
+    background:linear-gradient(90deg,var(--text-3) 40%,var(--text-2) 50%,var(--text-3) 60%);
+    background-size:200% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;
+    animation:sh 1.6s linear infinite}
+  @keyframes sh{to{background-position:-200% 0}}
+
+  .feedfoot{flex:none;border-top:1px solid var(--border);padding:5px 12px;
+    font-family:var(--mono);font-size:10px;color:var(--text-3);white-space:nowrap;overflow:hidden}
+  .feedfoot b{color:var(--text-2);font-weight:600}
+
+  /* skeletons + empty */
+  .skel{background:var(--surface);border:1px solid var(--border);border-radius:6px;
+    padding:10px 10px 10px 14px;margin:4px 0}
+  .skel div{height:8px;border-radius:3px;background:var(--surface-2);margin:6px 0;
+    animation:sk 1.4s ease-in-out infinite}
+  @keyframes sk{50%{opacity:.45}}
+  .placeholder{padding:48px 24px;text-align:center;color:var(--text-3);font-size:12.5px;line-height:1.7}
+  .placeholder b{display:block;color:var(--text-2);font-size:13px;font-weight:600;margin-bottom:6px}
+  .placeholder .kbd{font-family:var(--mono);color:var(--text-2)}
+
+  /* ================= thread ================= */
+  .thread{overflow:hidden}
+  .thead{flex:none;display:flex;align-items:center;gap:8px;padding:10px 16px;
+    border-bottom:1px solid var(--border);background:var(--bg)}
+  .thead .title{font-weight:700;font-size:14px;white-space:nowrap;flex:none;max-width:28ch;
+    overflow:hidden;text-overflow:ellipsis}
+  .thead .sub{color:var(--text-3);font-size:11.5px;white-space:nowrap;overflow:hidden;
+    text-overflow:ellipsis;min-width:0;flex:1}
+  .tactions{margin-left:auto;display:flex;gap:6px;flex:none;position:relative}
+  .btn{border:1px solid var(--border);background:var(--surface);color:var(--text);
+    border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer;font-family:inherit;white-space:nowrap}
+  .btn:hover{background:var(--surface-2)}
+  .btn:disabled{opacity:.4;cursor:not-allowed}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#0d1117;font-weight:600}
+  .btn.primary:hover{filter:brightness(1.1);background:var(--accent)}
+  .key{font-family:var(--mono);font-size:9.5px;border:1px solid var(--border);
+    border-bottom-width:2px;border-radius:3px;padding:0 4px;color:var(--text-3);margin-left:5px}
+  .btn.primary .key{border-color:rgba(13,17,23,.35);color:rgba(13,17,23,.7)}
+  .menu{position:absolute;right:0;top:32px;background:var(--surface);border:1px solid var(--border);
+    border-radius:6px;padding:4px;z-index:30;min-width:180px;box-shadow:0 8px 24px rgba(0,0,0,.5)}
+  .menu button{display:block;width:100%;text-align:left;background:none;border:none;color:var(--text);
+    font:12px var(--sans);padding:5px 8px;border-radius:4px;cursor:pointer}
+  .menu button:hover:not(:disabled){background:var(--surface-2)}
+  .menu button:disabled{color:var(--text-3);cursor:default}
+
+  .tscroll{flex:1;overflow-y:auto;outline:none}
+  .tscroll:focus-visible{box-shadow:inset 0 0 0 1px var(--accent)}
+  .tbody{padding:14px 16px 28px;max-width:900px}
+
+  /* analysis card */
+  .analysis{border:1px solid var(--border);border-radius:8px;background:var(--surface);margin-bottom:16px}
+  .stalebanner{display:flex;align-items:center;gap:8px;padding:6px 12px;font-size:12px;color:var(--warn);
+    background:rgba(227,179,65,.08);border-bottom:1px solid rgba(227,179,65,.3);border-radius:8px 8px 0 0}
+  .abody{padding:12px 14px}
+  .awhy{display:flex;align-items:center;gap:8px;font-size:13.5px;font-weight:600;margin-bottom:8px}
+  .awhy .chev{margin-left:auto;color:var(--text-3);cursor:pointer;background:none;border:none;
+    font-size:11px;font-family:var(--mono);padding:0 4px}
+  .awhy .chev:hover{color:var(--text)}
+  .awhy .whytext{overflow:hidden;text-overflow:ellipsis}
+  .analysis.collapsed .abody>*:not(.awhy){display:none}
+  .analysis.collapsed .ameta{display:none}
+  .asec{margin:8px 0;font-size:12.5px;color:var(--text-2)}
+  .asec b{color:var(--text);font-weight:600}
+  .action-row{display:flex;align-items:flex-start;gap:10px}
+  .action-row .draftbtn{flex:none;border:1px solid var(--accent);color:var(--accent);background:none;
+    border-radius:6px;padding:2px 8px;font-size:11.5px;cursor:pointer;font-family:inherit;white-space:nowrap}
+  .action-row .draftbtn:hover{background:rgba(76,141,255,.1)}
+  .ctx{list-style:none;margin-top:4px}
+  .ctx li{padding:2px 0;color:var(--text-2);font-size:12.5px}
+  .src{font-family:var(--mono);font-size:10px;color:var(--text-3);
+    border:1px solid var(--border);border-radius:4px;padding:0 4px;margin-right:6px}
+  .ameta{display:flex;gap:6px;align-items:center;border-top:1px solid var(--border);
+    padding:6px 14px;font-family:var(--mono);font-size:10.5px;color:var(--text-3);flex-wrap:wrap}
+  .ameta .muted-link{color:var(--text-3);text-decoration:underline dotted;cursor:help}
+  .analysis.pending .abody{color:var(--text-3)}
+  .askel{height:9px;border-radius:3px;background:var(--surface-2);margin:8px 0;animation:sk 1.4s ease-in-out infinite}
+
+  /* transcript */
+  .divider{display:flex;align-items:center;gap:10px;color:var(--text-3);font-size:10.5px;
+    font-family:var(--mono);margin:14px 0 8px}
+  .divider::before,.divider::after{content:"";flex:1;border-top:1px solid var(--border)}
+  .divider.stale-div{color:var(--warn)}
+  .divider.stale-div::before,.divider.stale-div::after{border-color:rgba(227,179,65,.4)}
+  .msg{display:flex;gap:10px;padding:3px 0}
+  .msg.first{margin-top:10px}
+  .avatar{width:26px;height:26px;border-radius:5px;background:var(--surface-2);flex:none;
+    display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:var(--text-2)}
+  .avatar.ghost{background:none}
+  .mbody{min-width:0;flex:1}
+  .mhead{display:flex;align-items:baseline;gap:8px}
+  .mauthor{font-weight:700;font-size:12.5px}
+  .mtime{font-family:var(--mono);font-size:10px;color:var(--text-3)}
+  .mtext{color:var(--text);font-size:13px;overflow-wrap:anywhere}
+  .mtext .mline{min-height:1.45em}
+  .mtext .quote{border-left:2px solid var(--border);padding-left:8px;color:var(--text-2);margin:2px 0}
+  .mtext .empty-msg{color:var(--text-3);font-style:italic}
+  .mention{color:var(--accent);background:rgba(76,141,255,.12);border-radius:3px;padding:0 3px}
+  .code{font-family:var(--mono);font-size:11.5px;background:var(--surface-2);
+    border:1px solid var(--border);border-radius:4px;padding:0 4px}
+  .codeblock{font-family:var(--mono);font-size:11.5px;background:var(--surface);
+    border:1px solid var(--border);border-radius:6px;padding:8px 10px;margin:4px 0;
+    white-space:pre-wrap;overflow-x:auto;color:var(--text)}
+  .emoji-miss{color:var(--text-3);font-family:var(--mono);font-size:11.5px}
+  .endcta{margin-top:18px;color:var(--text-3);font-size:12px}
+  .endcta button{background:none;border:none;color:var(--accent);cursor:pointer;font:12px var(--sans);padding:0}
+  .endcta button:hover{text-decoration:underline}
+
+  /* ================= chat (shell) ================= */
+  .chead{flex:none;display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--border)}
+  .chead .who{font-weight:700;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sess{display:flex;align-items:center;gap:5px;font-family:var(--mono);font-size:10px;
+    color:var(--text-3);border:1px solid var(--border);border-radius:10px;padding:1px 8px;flex:none}
+  .sess i{width:6px;height:6px;border-radius:50%;background:var(--text-3);display:inline-block}
+  .cclose{margin-left:auto;color:var(--text-3);cursor:pointer;font-size:14px;background:none;
+    border:none;font-family:inherit;flex:none}
+  .cclose:hover{color:var(--text)}
+  .cbody{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:10px}
+  .sysnote{align-self:center;font-family:var(--mono);font-size:10px;color:var(--text-3);text-align:center}
+  .chatinfo{border:1px dashed var(--border);border-radius:8px;padding:12px;color:var(--text-2);font-size:12px;line-height:1.6}
+  .chatinfo h4{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3);margin-bottom:6px}
+  .chatinfo ul{margin:8px 0 0 16px;color:var(--text-3);font-size:11.5px}
+  .composer{flex:none;border-top:1px solid var(--border);padding:10px 12px}
+  .composer textarea{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;
+    padding:8px 10px;color:var(--text);resize:none;height:60px;outline:none;font:12.5px/1.5 var(--sans)}
+  .composer textarea:focus{border-color:var(--accent)}
+  .crow{display:flex;align-items:center;gap:8px;margin-top:6px}
+  .chint{font-family:var(--mono);font-size:9.5px;color:var(--text-3)}
+  .csend{background:var(--ok);border:none;color:#0d1117;font-weight:700;font-size:12px;
+    border-radius:6px;padding:4px 10px;font-family:inherit}
+  .csend:disabled{opacity:.35;cursor:not-allowed}
+  .cnote{margin-left:auto;font-size:10.5px;color:var(--warn);text-align:right}
+
+  /* ================= help overlay ================= */
+  .overlay{position:fixed;inset:0;background:rgba(3,6,10,.72);z-index:100;display:none;
+    align-items:center;justify-content:center}
+  .overlay.on{display:flex}
+  .helpcard{background:var(--surface);border:1px solid var(--border);border-radius:10px;
+    padding:18px 20px;min-width:420px;box-shadow:0 20px 60px rgba(0,0,0,.6)}
+  .helpcard h3{font-size:13px;margin-bottom:12px;display:flex;align-items:center}
+  .helpcard h3 span{margin-left:auto;font:10px var(--mono);color:var(--text-3);font-weight:400}
+  .helprow{display:flex;gap:12px;padding:3px 0;font-size:12.5px;color:var(--text-2);align-items:baseline}
+  .helprow kbd{font-family:var(--mono);font-size:10.5px;border:1px solid var(--border);
+    border-bottom-width:2px;border-radius:3px;padding:1px 6px;color:var(--text);min-width:56px;
+    text-align:center;flex:none;background:var(--bg)}
+  .helpsec{margin-top:12px;padding-top:8px;border-top:1px solid var(--border);font-size:11px;color:var(--text-3)}
+
+  /* ================= legend ================= */
+  .legend{flex:none;display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+    border-top:1px solid var(--border);background:var(--surface);
+    padding:5px 14px;font-size:10.5px;color:var(--text-3)}
+  .lg{display:flex;align-items:center;gap:5px}
+  .sw{width:10px;height:10px;border-radius:3px;display:inline-block}
+  .legend .note{margin-left:auto;font-family:var(--mono)}
 </style>
 </head>
-<body>
-<header>
-  <h1>Slack Copilot</h1>
-  <span class="sub" id="refreshed"></span>
-</header>
-<main>
-  <div id="feed"></div>
-</main>
-<script>
-// Injected by the server when it serves this page ('/' or '/index.html'); the copy on
-// disk holds only the placeholder. Every /api/* request must carry it as x-copilot-token.
-const COPILOT_TOKEN = '__COPILOT_TOKEN__';
+<body class="chat-closed">
+<div class="app">
 
-const feedEl = document.getElementById('feed');
-const refreshedEl = document.getElementById('refreshed');
+  <div class="topbar">
+    <div class="brand">Slack<span class="dot">·</span>Copilot</div>
+    <div class="tabs" id="tabs">
+      <button class="tab active" data-tab="inbox" title="Inbox (1)">Inbox <span class="count" id="tab-count"></span></button>
+      <button class="tab" data-tab="done" title="Done (2)">Done</button>
+      <button class="tab" data-tab="all" title="All (3)">All</button>
+    </div>
+    <div class="statuses" id="statuses"></div>
+  </div>
+
+  <div class="strip" id="strip"></div>
+
+  <div class="main">
+    <div class="pane feed">
+      <div class="feedlist" id="feedlist"></div>
+      <div class="feedfoot"><b>j/k</b> move · <b>enter</b> open · <b>e</b> done · <b>u</b> unseen · <b>c</b> chat · <b>s</b> slack · <b>?</b> help</div>
+    </div>
+
+    <div class="pane thread" id="thread"></div>
+
+    <div class="pane chat" id="chat"></div>
+  </div>
+
+  <div class="legend">
+    <span class="lg"><span class="sw" style="background:var(--p0)"></span>P0</span>
+    <span class="lg"><span class="sw" style="background:var(--p1)"></span>P1</span>
+    <span class="lg"><span class="sw" style="background:var(--p2)"></span>P2</span>
+    <span class="lg"><span class="sw" style="background:var(--p3)"></span>P3</span>
+    <span class="lg"><span class="sw" style="border:1px dashed var(--text-3)"></span>analyzing</span>
+    <span class="lg"><span style="color:var(--warn)">↻</span>stale analysis</span>
+    <span class="lg"><span class="sw" style="background:var(--accent);border-radius:50%;width:7px;height:7px"></span>unseen</span>
+    <span class="lg"><span style="color:var(--ok)">✓</span>done</span>
+    <span class="note" id="legend-note"></span>
+  </div>
+</div>
+
+<div class="overlay" id="overlay"><div class="helpcard" id="helpcard"></div></div>
+
+<script>
+'use strict';
+/* =========================================================================
+   Slack Copilot UI — vanilla, single file, no external assets.
+   Spec: docs/ux.md · reference render: docs/ux-mock.html
+
+   SECURITY (do not regress):
+   1. COPILOT_TOKEN below holds the placeholder literal that src/server.ts swaps
+      for the per-run token when it serves '/' or '/index.html'. Keep exactly one
+      occurrence of it in this file (server-side replace is global, so a second
+      copy — even in a comment — would leak the token into the served page).
+      Every /api/* request goes through apiFetch() so it carries the token; there
+      is no unwrapped call to the API anywhere in this file.
+   2. Every Slack-controlled string (message text, author/channel/team names,
+      and Claude's why/summary/action/context) is attacker-influenced. It only
+      ever reaches the DOM through textContent / createElement, or through the
+      html`` tagged template which escapes interpolations with esc(). The
+      mrkdwn renderer builds real DOM nodes — message text never touches
+      innerHTML at all, so `<img src=x onerror=...>` renders as inert text.
+   3. Only /^https?:\/\//i URLs become links (httpUrlOrNull), always with
+      rel="noopener noreferrer".
+   ========================================================================= */
+
+const COPILOT_TOKEN = '__COPILOT_TOKEN__';
 
 /** fetch() for /api/*, with the per-run token attached. */
 function apiFetch(url, options) {
@@ -134,34 +371,22 @@ function handleAuthFailure() {
   location.reload();
 }
 
+/** HTML-escape. Required for ANY string-built markup; see html`` below. */
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   }[c]));
 }
 
-function relTime(slackTs) {
-  if (!slackTs) return '';
-  const ms = parseFloat(slackTs) * 1000;
-  if (!isFinite(ms)) return '';
-  const diff = Date.now() - ms;
-  const s = Math.round(diff / 1000);
-  if (s < 45) return 'just now';
-  const m = Math.round(s / 60);
-  if (m < 60) return m + 'm ago';
-  const h = Math.round(m / 60);
-  if (h < 24) return h + 'h ago';
-  const d = Math.round(h / 24);
-  if (d < 7) return d + 'd ago';
-  return new Date(ms).toLocaleDateString();
+/** Tagged template that escapes every interpolation. The only sanctioned way to
+ *  build a markup string here; static literals are trusted, values never are. */
+function html(strings) {
+  let out = strings[0];
+  for (let i = 1; i < arguments.length; i++) out += esc(arguments[i]) + strings[i];
+  return out;
 }
 
-function snippet(text, max = 180) {
-  const t = String(text ?? '');
-  return t.length > max ? t.slice(0, max) + '…' : t;
-}
-
-// Permalinks come from Slack (untrusted). esc() blocks attribute breakout but not a
+// Permalinks come from Slack (untrusted). Escaping blocks attribute breakout but not a
 // javascript:/data: URI, which would run on this origin when clicked — so only http(s)
 // URLs are ever turned into a link.
 function httpUrlOrNull(u) {
@@ -169,87 +394,1259 @@ function httpUrlOrNull(u) {
   return /^https?:\/\//i.test(s) ? s : null;
 }
 
-function card(item) {
-  const urgency = item.urgency && ['P0','P1','P2','P3'].includes(item.urgency) ? item.urgency : null;
-  const badge = urgency
-    ? '<span class="badge ' + urgency + '">' + urgency + '</span>'
-    : '<span class="badge none">…</span>';
-  const chan = item.kind === 'mention'
-    ? '#' + (item.channel_name ?? '?')
-    : (item.channel_name ?? 'DM');
-  const lm = item.last_message;
-  const author = lm && lm.author_name ? lm.author_name : 'unknown';
-  const statusCls = item.status === 'seen' ? 'seen' : item.status === 'done' ? 'done' : '';
-  const permalink = httpUrlOrNull(item.permalink);
-  const linkHtml = permalink
-    ? '<a href="' + esc(permalink) + '" target="_blank" rel="noopener noreferrer">Open in Slack</a>'
-    : (item.permalink
-        ? '<span class="nolink" title="link hidden: not an http(s) URL">Open in Slack</span>'
-        : '');
-
-  let buttons = '';
-  if (item.status === 'new') {
-    buttons += '<button data-id="' + item.id + '" data-status="seen">Mark seen</button>';
-  }
-  if (item.status !== 'done') {
-    buttons += '<button data-id="' + item.id + '" data-status="done">Mark done</button>';
-  } else {
-    buttons += '<button data-id="' + item.id + '" data-status="new">Reopen</button>';
-  }
-
-  return '<div class="card ' + statusCls + '">' +
-    '<div class="row">' +
-      badge +
-      '<span class="where"><span class="ws">' + esc(item.team_name ?? item.workspace) + '</span> · ' + esc(chan) + '</span>' +
-      '<span class="kind">' + esc(item.kind) + '</span>' +
-      '<span class="count">' + item.message_count + ' msg' + (item.message_count === 1 ? '' : 's') + '</span>' +
-      '<span class="time">' + esc(relTime(item.last_activity)) + '</span>' +
-    '</div>' +
-    '<div class="snippet"><span class="author">' + esc(author) + ':</span> ' +
-      '<span class="text">' + esc(snippet(lm ? lm.text : '')) + '</span></div>' +
-    (item.why ? '<div class="why">' + esc(item.why) + '</div>' : '') +
-    '<div class="actions">' +
-      linkHtml +
-      buttons +
-      '<span class="status-label">' + esc(item.status) + '</span>' +
-    '</div>' +
-  '</div>';
+/** JSON GET/POST through apiFetch, with the shared 401 recovery. */
+async function api(path, options) {
+  const res = await apiFetch(path, options);
+  if (res.status === 401) { handleAuthFailure(); throw new Error('unauthorized'); }
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return res.json();
 }
 
-async function refresh() {
+/* ============================ tiny DOM helpers ============================ */
+
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = String(text);
+  return n;
+}
+function link(url, label) {
+  const safe = httpUrlOrNull(url);
+  if (!safe) return el('span', null, label);
+  const a = document.createElement('a');
+  a.href = safe;
+  a.target = '_blank';
+  a.rel = 'noopener noreferrer';
+  a.textContent = label;
+  return a;
+}
+
+/* ============================== time helpers ============================== */
+
+function tsMs(slackTs) {
+  const ms = parseFloat(slackTs) * 1000;
+  return isFinite(ms) ? ms : NaN;
+}
+/** now · 5m · 2h · Mon · Jul 28 */
+function relTime(slackTs) {
+  const ms = tsMs(slackTs);
+  if (!isFinite(ms)) return '';
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 45) return 'now';
+  const m = Math.round(s / 60);
+  if (m < 60) return m + 'm';
+  const h = Math.round(m / 60);
+  if (h < 24) return h + 'h';
+  const d = Math.floor((startOfDay(Date.now()) - startOfDay(ms)) / 86400000);
+  if (d < 7) return new Date(ms).toLocaleDateString(undefined, { weekday: 'short' });
+  return new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+function startOfDay(ms) { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); }
+function clockTime(slackTs) {
+  const ms = tsMs(slackTs);
+  if (!isFinite(ms)) return '';
+  return new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+}
+function dayLabel(slackTs) {
+  const ms = tsMs(slackTs);
+  if (!isFinite(ms)) return '';
+  const diff = Math.round((startOfDay(Date.now()) - startOfDay(ms)) / 86400000);
+  if (diff === 0) return 'Today';
+  if (diff === 1) return 'Yesterday';
+  if (diff < 7) return new Date(ms).toLocaleDateString(undefined, { weekday: 'long' });
+  return new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+/** ISO-ish analyzed_at → "6m ago" */
+function agoFromIso(iso) {
+  const ms = Date.parse(String(iso ?? ''));
+  if (!isFinite(ms)) return null;
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 45) return 'just now';
+  const m = Math.round(s / 60);
+  if (m < 60) return m + 'm ago';
+  const h = Math.round(m / 60);
+  if (h < 24) return h + 'h ago';
+  return Math.round(h / 24) + 'd ago';
+}
+
+/* ============================ Slack mrkdwn =============================== */
+/* Slack sends message text with &, < and > entity-encoded, and wraps its own
+   tokens in angle brackets (<@U1>, <#C1|name>, <https://x|label>). We build DOM
+   nodes directly: nothing here ever produces an HTML string. */
+
+const EMOJI = {
+  smile:'😄', smiley:'😃', grin:'😁', joy:'😂', sweat_smile:'😅', laughing:'😆',
+  wink:'😉', blush:'😊', thinking_face:'🤔', neutral_face:'😐', confused:'😕',
+  cry:'😢', sob:'😭', scream:'😱', angry:'😠', rage:'😡', sleeping:'😴',
+  sunglasses:'😎', nerd_face:'🤓', heart:'❤️', broken_heart:'💔', fire:'🔥',
+  tada:'🎉', sparkles:'✨', rocket:'🚀', star:'⭐', star2:'🌟', zap:'⚡',
+  boom:'💥', bulb:'💡', warning:'⚠️', bangbang:'‼️', question:'❓',
+  white_check_mark:'✅', heavy_check_mark:'✔️', x:'❌', no_entry:'⛔',
+  eyes:'👀', wave:'👋', pray:'🙏', clap:'👏', muscle:'💪', ok_hand:'👌',
+  thumbsup:'👍', '+1':'👍', thumbsdown:'👎', '-1':'👎', point_right:'👉',
+  raised_hands:'🙌', handshake:'🤝', bow:'🙇', facepalm:'🤦', shrug:'🤷',
+  coffee:'☕', beer:'🍺', pizza:'🍕', cake:'🍰', taco:'🌮',
+  calendar:'📅', date:'📆', clock1:'🕐', hourglass:'⏳', alarm_clock:'⏰',
+  memo:'📝', pencil:'✏️', book:'📖', chart_with_upwards_trend:'📈',
+  bug:'🐛', wrench:'🔧', hammer:'🔨', gear:'⚙️', lock:'🔒', key:'🔑',
+  mag:'🔍', link:'🔗', email:'📧', bell:'🔔', mega:'📣', pushpin:'📌',
+  green_circle:'🟢', red_circle:'🔴', large_blue_circle:'🔵', 'sos':'🆘',
+  ship:'🚢', tada2:'🎊', 'raised_hand':'✋', 'point_up':'☝️', 'no_bell':'🔕',
+  100:'💯', ok:'🆗', new:'🆕', up:'🆙', top:'🔝', recycle:'♻️'
+};
+
+function decodeEntities(s) {
+  return String(s).replace(/&(amp|lt|gt|quot|#0?39|apos);/g, (m, e) => (
+    e === 'amp' ? '&' : e === 'lt' ? '<' : e === 'gt' ? '>' : e === 'quot' ? '"' : "'"
+  ));
+}
+
+function shortUrl(u) {
   try {
-    const res = await apiFetch('/api/feed');
-    if (res.status === 401) { handleAuthFailure(); throw new Error('HTTP 401'); }
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const items = await res.json();
-    if (!Array.isArray(items) || items.length === 0) {
-      feedEl.innerHTML = '<div class="empty">No items yet — waiting for Slack events</div>';
-    } else {
-      feedEl.innerHTML = items.map(card).join('');
+    const p = new URL(u);
+    const seg = p.pathname.split('/').filter(Boolean)[0];
+    return p.host + (seg ? '/' + seg + (p.pathname.split('/').filter(Boolean).length > 1 ? '/…' : '') : '');
+  } catch (_) { return u; }
+}
+
+const INLINE_SRC = "`([^`\\n]+)`|<([^<>\\n]*)>|:([a-z0-9_+\\-']+):|\\*([^*\\n]+)\\*|_([^_\\n]+)_|~([^~\\n]+)~";
+
+/** Resolve <...> Slack angle tokens to a DOM node. `names` maps user id → display name. */
+function angleToken(inner, names) {
+  const head = inner.charAt(0);
+  const bar = inner.indexOf('|');
+  const body = bar >= 0 ? inner.slice(0, bar) : inner;
+  const label = bar >= 0 ? inner.slice(bar + 1) : '';
+  if (head === '@') {
+    const id = body.slice(1);
+    return el('span', 'mention', '@' + (label || (names && names[id]) || id));
+  }
+  if (head === '#') {
+    const id = body.slice(1);
+    return el('span', 'mention', '#' + (label || id));
+  }
+  if (head === '!') {
+    const word = body.slice(1);
+    if (word === 'here' || word === 'channel' || word === 'everyone') {
+      return el('span', 'mention', '@' + word);
     }
-    refreshedEl.textContent = 'updated ' + new Date().toLocaleTimeString();
-  } catch (err) {
-    refreshedEl.textContent = 'refresh failed: ' + err.message;
+    return el('span', null, label || '<' + inner + '>');
+  }
+  if (/^mailto:/i.test(body)) return el('span', null, label || body.replace(/^mailto:/i, ''));
+  const safe = httpUrlOrNull(body);
+  if (safe) return link(safe, label || shortUrl(safe));
+  return el('span', null, decodeEntities('<' + inner + '>'));
+}
+
+function appendInline(parent, text, names, depth) {
+  const src = String(text ?? '');
+  // fresh regex per call: appendInline recurses (bold containing code, …) and a
+  // shared /g/ regex would have its lastIndex clobbered by the inner pass.
+  const re = new RegExp(INLINE_SRC, 'gi');
+  let last = 0, m;
+  while ((m = re.exec(src)) !== null) {
+    // `_italic_` only counts on word boundaries (protects snake_case identifiers).
+    // On rejection, rewind to just past the opening `_`: the rejected span may
+    // have swallowed real markup (e.g. "api_key and *rotate* it_now"), which a
+    // plain `continue` would silently drop back to literal text.
+    if (m[5] !== undefined) {
+      const before = src.charAt(m.index - 1), after = src.charAt(m.index + m[0].length);
+      if (/\w/.test(before) || /\w/.test(after)) { re.lastIndex = m.index + 1; continue; }
+    }
+    if (m.index > last) parent.appendChild(document.createTextNode(decodeEntities(src.slice(last, m.index))));
+    last = m.index + m[0].length;
+
+    if (m[1] !== undefined) {
+      parent.appendChild(el('span', 'code', decodeEntities(m[1])));
+    } else if (m[2] !== undefined) {
+      parent.appendChild(angleToken(m[2], names));
+    } else if (m[3] !== undefined) {
+      const code = m[3].toLowerCase();
+      if (EMOJI[code]) parent.appendChild(document.createTextNode(EMOJI[code]));
+      else parent.appendChild(el('span', 'emoji-miss', ':' + m[3] + ':'));
+    } else {
+      const tag = m[4] !== undefined ? 'strong' : m[5] !== undefined ? 'em' : 's';
+      const inner = m[4] !== undefined ? m[4] : m[5] !== undefined ? m[5] : m[6];
+      const node = el(tag);
+      if (depth < 4) appendInline(node, inner, names, depth + 1);
+      else node.textContent = decodeEntities(inner);
+      parent.appendChild(node);
+    }
+  }
+  if (last < src.length) parent.appendChild(document.createTextNode(decodeEntities(src.slice(last))));
+}
+
+function appendLines(parent, chunk, names) {
+  const lines = String(chunk).split('\n');
+  let quote = null;
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    if (i === lines.length - 1 && raw === '' && lines.length > 1) continue; // trailing newline
+    const isQuote = /^&gt;\s?|^>\s?/.test(raw);
+    const body = isQuote ? raw.replace(/^(&gt;|>)\s?/, '') : raw;
+    const line = el('div', 'mline');
+    appendInline(line, body, names, 0);
+    if (isQuote) {
+      if (!quote) { quote = el('div', 'quote'); parent.appendChild(quote); }
+      quote.appendChild(line);
+    } else {
+      quote = null;
+      parent.appendChild(line);
+    }
   }
 }
 
-feedEl.addEventListener('click', async (e) => {
-  const btn = e.target.closest('button[data-id]');
-  if (!btn) return;
-  btn.disabled = true;
+/** Slack mrkdwn → DocumentFragment. No innerHTML anywhere on this path. */
+function renderMrkdwn(text, names) {
+  const frag = document.createDocumentFragment();
+  const src = String(text ?? '');
+  if (!src.trim()) {
+    frag.appendChild(el('span', 'empty-msg', '(no text — file, attachment, or rich block)'));
+    return frag;
+  }
+  const parts = src.split('```');
+  for (let i = 0; i < parts.length; i++) {
+    if (i % 2 === 1) {
+      frag.appendChild(el('pre', 'codeblock', decodeEntities(parts[i].replace(/^\n/, '').replace(/\n$/, ''))));
+    } else {
+      // a chunk that follows a fence starts with the newline that closed it
+      const chunk = i > 0 ? parts[i].replace(/^\n/, '') : parts[i];
+      if (chunk !== '') appendLines(frag, chunk, names);
+    }
+  }
+  return frag;
+}
+
+/** Slack mrkdwn → single-line plain text (feed snippets). Returned as a string,
+ *  always assigned with textContent. */
+function plainText(text, names) {
+  let s = String(text ?? '');
+  s = s.replace(/```/g, ' ');
+  s = s.replace(/<([^<>\n]*)>/g, (m, inner) => {
+    const head = inner.charAt(0);
+    const bar = inner.indexOf('|');
+    const body = bar >= 0 ? inner.slice(0, bar) : inner;
+    const label = bar >= 0 ? inner.slice(bar + 1) : '';
+    if (head === '@') return '@' + (label || (names && names[body.slice(1)]) || body.slice(1));
+    if (head === '#') return '#' + (label || body.slice(1));
+    if (head === '!') return '@' + body.slice(1);
+    return label || body.replace(/^mailto:/i, '');
+  });
+  s = s.replace(/:([a-z0-9_+\-']+):/gi, (m, c) => EMOJI[c.toLowerCase()] || m);
+  // drop `_` only when it delimits italics, so snake_case survives the snippet
+  s = s.replace(/(^|[^\w])_([^_\n]+)_(?=[^\w]|$)/g, '$1$2');
+  s = s.replace(/[*~`]/g, '');
+  s = decodeEntities(s);
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+/* ============================ workspace identity ========================== */
+
+const WS_COLORS = ['#39c5cf', '#bc8cff', '#e3b341', '#7ee787', '#ffa198', '#79c0ff'];
+function wsBadge(item) {
+  const key = String(item.workspace ?? '?');
+  const b = el('span', 'ws', key.charAt(0).toUpperCase() || '?');
+  b.style.background = WS_COLORS[Math.abs(key.charCodeAt(0) || 0) % WS_COLORS.length];
+  b.title = item.team_name || ('workspace ' + key);
+  return b;
+}
+function channelLabel(item) {
+  const name = item.channel_name;
+  if (item.kind === 'mention') return '#' + (name || 'channel');
+  return name ? 'DM · ' + name : 'DM';
+}
+
+/* ================================= state ================================= */
+
+const POLL_MS = 5000;
+const MAX_HYDRATE = 10;
+const RANK = { P0: 0, P1: 1, P2: 2, P3: 3 };
+
+const state = {
+  items: [],
+  loaded: false,
+  feedError: null,
+  lastOk: null,
+  tab: 'inbox',
+  cursor: null,
+  focusPane: 'feed',       // feed | thread | chat
+  chatOpen: false,
+  detail: null,
+  detailLoading: false,
+  detailError: null,
+  cache: new Map(),        // thread id -> { key, detail }
+  overrides: new Map(),    // thread id -> { status, at }  (optimistic)
+  knownIds: new Set(),
+  chatSeed: '',
+  chatNote: '',
+};
+
+const feedListEl = document.getElementById('feedlist');
+const threadEl = document.getElementById('thread');
+const chatEl = document.getElementById('chat');
+const stripEl = document.getElementById('strip');
+const statusesEl = document.getElementById('statuses');
+const overlayEl = document.getElementById('overlay');
+const cardEls = new Map();
+
+function urgencyOf(it) { return it && RANK[it.urgency] !== undefined ? it.urgency : null; }
+function itemById(id) { return state.items.find((i) => i.id === id) || null; }
+function analysisMetaFor(id) {
+  const c = state.cache.get(id);
+  return c && c.detail ? c.detail.analysis : null;
+}
+/** Replies landed after the analyzer's coverage point. */
+function isStale(it) {
+  const a = analysisMetaFor(it.id);
+  if (!a || !a.covered_through_ts || !urgencyOf(it) || !it.last_activity) return false;
+  return parseFloat(it.last_activity) > parseFloat(a.covered_through_ts) + 0.0001;
+}
+function staleCount(it) {
+  const c = state.cache.get(it.id);
+  const a = analysisMetaFor(it.id);
+  if (!c || !c.detail || !a || !a.covered_through_ts) return 0;
+  return c.detail.messages.filter((m) => parseFloat(m.ts) > parseFloat(a.covered_through_ts) + 0.0001).length;
+}
+
+function visibleItems() {
+  const list = state.items.filter((i) =>
+    state.tab === 'inbox' ? i.status !== 'done' : state.tab === 'done' ? i.status === 'done' : true);
+  const byAct = (a, b) => parseFloat(b.last_activity || 0) - parseFloat(a.last_activity || 0);
+  const pending = list.filter((i) => !urgencyOf(i) && i.status !== 'done').sort(byAct);
+  const ranked = list.filter((i) => !(!urgencyOf(i) && i.status !== 'done')).sort((a, b) => {
+    const ra = RANK[a.urgency] !== undefined ? RANK[a.urgency] : 4;
+    const rb = RANK[b.urgency] !== undefined ? RANK[b.urgency] : 4;
+    return ra !== rb ? ra - rb : byAct(a, b);
+  });
+  return { pending, ranked, flat: pending.concat(ranked) };
+}
+
+/* =============================== data flow =============================== */
+
+/** Selection, hydration and boot can all want the same thread at once; share one
+ *  request instead of firing three identical ones. */
+const inflight = new Map();
+function fetchThread(id) {
+  const running = inflight.get(id);
+  if (running) return running;
+  const p = api('/api/thread/' + id);
+  inflight.set(id, p);
+  p.then(() => inflight.delete(id), () => inflight.delete(id));
+  return p;
+}
+
+function applyOverrides() {
+  const now = Date.now();
+  state.overrides.forEach((ov, id) => {
+    const it = itemById(id);
+    if (!it) { state.overrides.delete(id); return; }
+    if (it.status === ov.status || now - ov.at > 8000) { state.overrides.delete(id); return; }
+    it.status = ov.status;
+  });
+}
+
+async function loadFeed() {
   try {
-    const res = await apiFetch('/api/thread/' + btn.dataset.id + '/status', {
+    const items = await api('/api/feed');
+    state.items = Array.isArray(items) ? items : [];
+    state.loaded = true;
+    state.feedError = null;
+    state.lastOk = Date.now();
+    applyOverrides();
+    ensureCursor();
+    renderAll();
+    hydrate();
+  } catch (err) {
+    state.feedError = err && err.message ? err.message : 'unknown error';
+    renderStrip();
+    renderStatuses();
+  }
+}
+
+/** The feed endpoint has no covered_through_ts / analyzed_at, so per-thread
+ *  detail is pulled lazily (cached by id+last_activity) to power the stale
+ *  marker and make thread opens instant. Bounded to the top MAX_HYDRATE rows. */
+let hydrating = false;
+async function hydrate() {
+  if (hydrating) return;
+  const { flat } = visibleItems();
+  const todo = flat.slice(0, MAX_HYDRATE).filter((it) => {
+    const c = state.cache.get(it.id);
+    return !c || c.key !== it.id + ':' + it.last_activity;
+  });
+  if (!todo.length) return;
+  hydrating = true;
+  try {
+    for (const it of todo) {
+      try {
+        const d = await fetchThread(it.id);
+        state.cache.set(it.id, { key: it.id + ':' + it.last_activity, detail: d });
+        if (state.cursor === it.id) { state.detail = d; renderThread(); }
+      } catch (_) { /* transient; next poll retries */ }
+    }
+  } finally {
+    hydrating = false;
+    renderFeed();
+  }
+}
+
+function ensureCursor() {
+  const { flat } = visibleItems();
+  if (!flat.length) { if (state.cursor !== null) { state.cursor = null; state.detail = null; renderThread(); } return; }
+  if (state.cursor === null || !flat.some((i) => i.id === state.cursor)) {
+    setCursor(flat[0].id, { markSeen: false, silent: true });
+  }
+}
+
+function setCursor(id, opts) {
+  const o = opts || {};
+  const changed = state.cursor !== id;
+  state.cursor = id;
+  history.replaceState(null, '', id ? '#/t/' + id : '#');
+  if (changed) {
+    state.detailError = null;
+    loadDetail(id);
+  }
+  if (o.markSeen) {
+    const it = itemById(id);
+    if (it && it.status === 'new') setStatus(id, 'seen');
+  }
+  if (!o.silent) { renderFeed(); renderChat(); }
+  if (changed) scrollCursorIntoView();
+}
+
+async function loadDetail(id) {
+  const it = itemById(id);
+  const key = id + ':' + (it ? it.last_activity : '');
+  const c = state.cache.get(id);
+  if (c && c.key === key) {
+    state.detail = c.detail; state.detailLoading = false; renderThread(); return;
+  }
+  state.detail = c ? c.detail : null;
+  state.detailLoading = true;
+  renderThread();
+  try {
+    const d = await fetchThread(id);
+    if (state.cursor !== id) return;
+    state.cache.set(id, { key, detail: d });
+    state.detail = d;
+    state.detailError = null;
+  } catch (err) {
+    if (state.cursor !== id) return;
+    state.detailError = err && err.message ? err.message : 'failed';
+  }
+  state.detailLoading = false;
+  renderThread();
+  renderFeed();
+}
+
+async function setStatus(id, status) {
+  const it = itemById(id);
+  if (it) it.status = status;
+  state.overrides.set(id, { status, at: Date.now() });
+  renderFeed(); renderThread(); renderTitleBadge();
+  try {
+    await api('/api/thread/' + id + '/status', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: btn.dataset.status }),
+      body: JSON.stringify({ status }),
     });
-    if (res.status === 401) handleAuthFailure();
-  } catch (err) { /* next refresh will correct the view */ }
-  refresh();
+  } catch (_) { /* the next poll reconciles */ }
+  loadFeed();
+}
+
+function advanceCursor(delta) {
+  const { flat } = visibleItems();
+  if (!flat.length) return;
+  const i = flat.findIndex((x) => x.id === state.cursor);
+  const next = Math.min(flat.length - 1, Math.max(0, (i < 0 ? 0 : i) + delta));
+  if (flat[next] && flat[next].id !== state.cursor) setCursor(flat[next].id, {});
+  else scrollCursorIntoView();
+}
+
+function markDoneAndAdvance(id) {
+  const { flat } = visibleItems();
+  const i = flat.findIndex((x) => x.id === id);
+  const next = flat[i + 1] || flat[i - 1] || null;
+  setStatus(id, 'done');
+  if (state.tab === 'inbox' && next) setCursor(next.id, {});
+}
+
+function openInSlack(id) {
+  const it = itemById(id);
+  const url = it && httpUrlOrNull(it.permalink);
+  if (!url) { flashStrip('No Slack permalink stored for this thread.'); return; }
+  window.open(url, '_blank', 'noopener,noreferrer');
+}
+
+let stripFlash = null;
+function flashStrip(msg) {
+  stripFlash = msg;
+  renderStrip();
+  clearTimeout(flashStrip._t);
+  flashStrip._t = setTimeout(() => { stripFlash = null; renderStrip(); }, 4000);
+}
+
+/* ================================ render ================================= */
+
+function renderAll() {
+  renderStatuses(); renderStrip(); renderFeed(); renderThread(); renderChat(); renderTitleBadge();
+}
+
+function renderStatuses() {
+  const ws = new Map();
+  state.items.forEach((i) => { if (!ws.has(i.workspace)) ws.set(i.workspace, i.team_name || i.workspace); });
+  const pending = state.items.filter((i) => !urgencyOf(i) && i.status !== 'done').length;
+  statusesEl.replaceChildren();
+  if (pending) statusesEl.appendChild(el('span', 'queue', 'analyzing ' + pending));
+  ws.forEach((name, key) => {
+    const s = el('span', 'st');
+    s.appendChild(wsBadge({ workspace: key, team_name: name }));
+    s.appendChild(el('span', null, name));
+    s.title = 'workspace ' + key + ' — ' + name;
+    statusesEl.appendChild(s);
+  });
+  const ok = !state.feedError;
+  const srv = el('span', 'st');
+  const dot = el('i', ok ? 'ok' : 'err');
+  srv.appendChild(dot);
+  srv.appendChild(el('span', null, ok ? 'live' : 'offline'));
+  srv.title = ok
+    ? 'feed polling every ' + (POLL_MS / 1000) + 's — last update ' + (state.lastOk ? new Date(state.lastOk).toLocaleTimeString() : '—')
+    : 'feed poll failing: ' + state.feedError;
+  statusesEl.appendChild(srv);
+  const hb = el('button', 'helpbtn', '?');
+  hb.title = 'keyboard shortcuts';
+  hb.addEventListener('click', () => toggleHelp(true));
+  statusesEl.appendChild(hb);
+
+  const { flat } = visibleItems();
+  const unseen = state.items.filter((i) => i.status === 'new').length;
+  document.getElementById('tab-count').textContent = unseen ? String(unseen) : '';
+  document.getElementById('legend-note').textContent =
+    flat.length + (flat.length === 1 ? ' thread' : ' threads') +
+    (state.lastOk ? ' · updated ' + new Date(state.lastOk).toLocaleTimeString() : '');
+}
+
+function renderStrip() {
+  if (stripFlash) {
+    stripEl.className = 'strip on';
+    stripEl.textContent = '⚠ ' + stripFlash;
+    return;
+  }
+  if (state.feedError) {
+    stripEl.className = 'strip on err';
+    stripEl.textContent = '⚠ Feed refresh failed (' + state.feedError + ') — showing last known data' +
+      (state.lastOk ? ', updated ' + new Date(state.lastOk).toLocaleTimeString() : '') + '. Retrying…';
+    return;
+  }
+  stripEl.className = 'strip';
+  stripEl.textContent = '';
+}
+
+function skeletonFeed() {
+  const frag = document.createDocumentFragment();
+  for (let i = 0; i < 4; i++) {
+    const s = el('div', 'skel');
+    s.appendChild(el('div')).style.width = '40%';
+    s.appendChild(el('div')).style.width = '85%';
+    s.appendChild(el('div')).style.width = '65%';
+    frag.appendChild(s);
+  }
+  return frag;
+}
+
+function cardFor(it) {
+  let c = cardEls.get(it.id);
+  if (!c) {
+    c = el('div', 'card');
+    c.dataset.id = String(it.id);
+    c.appendChild(el('div', 'crow1'));
+    c.appendChild(el('div', 'crow2'));
+    c.appendChild(el('div', 'crow3'));
+    c.addEventListener('click', (e) => {
+      if (e.target.closest('.hbtn')) return;
+      setCursor(it.id, { markSeen: true });   // mouse click = engage
+      state.focusPane = 'feed';
+    });
+    cardEls.set(it.id, c);
+  }
+  const u = urgencyOf(it);
+  const stale = isStale(it);
+  const sig = JSON.stringify([u, it.status, it.why, it.last_activity, it.channel_name, it.kind,
+    it.last_message && it.last_message.author_name, it.last_message && it.last_message.text,
+    stale, staleCount(it), it.team_name, state.cursor === it.id]);
+  if (c.dataset.sig !== sig) {
+    c.dataset.sig = sig;
+    paintCard(c, it, u, stale);
+  }
+  c.classList.toggle('sel', state.cursor === it.id);
+  return c;
+}
+
+function paintCard(c, it, u, stale) {
+  c.className = 'card' + (u ? ' ' + u.toLowerCase() : '') +
+    (it.status === 'seen' ? ' seen' : '') + (it.status === 'done' ? ' done' : '') +
+    (stale ? ' stale' : '');
+
+  const r1 = c.children[0], r2 = c.children[1], r3 = c.children[2];
+  r1.replaceChildren(); r2.replaceChildren(); r3.replaceChildren();
+
+  if (u) {
+    const chip = el('span', 'chip c' + u.charAt(1), u);
+    chip.title = 'urgency ' + u;
+    r1.appendChild(chip);
+  } else {
+    const chip = el('span', 'chip pending', '…');
+    chip.title = 'not analyzed yet';
+    r1.appendChild(chip);
+  }
+  if (stale) {
+    const n = staleCount(it);
+    const s = el('span', 'stale-mark', '↻');
+    s.title = n ? n + (n === 1 ? ' new reply' : ' new replies') + ' since analysis' : 'new replies since analysis';
+    r1.appendChild(s);
+  }
+  r1.appendChild(wsBadge(it));
+  r1.appendChild(el('span', 'chan', channelLabel(it)));
+  if (it.kind === 'mention') r1.appendChild(el('span', 'kind', '@'));
+  const t = el('span', 'ctime', relTime(it.last_activity));
+  t.title = it.last_activity ? new Date(tsMs(it.last_activity)).toLocaleString() : '';
+  r1.appendChild(t);
+
+  const hb = el('span', 'hoverbtns');
+  const done = el('button', 'hbtn', it.status === 'done' ? '↺' : '✓');
+  done.title = it.status === 'done' ? 'reopen' : 'mark done (e)';
+  done.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (it.status === 'done') setStatus(it.id, 'new'); else markDoneAndAdvance(it.id);
+  });
+  hb.appendChild(done);
+  const slack = el('button', 'hbtn', '↗');
+  slack.title = httpUrlOrNull(it.permalink) ? 'open in Slack (s)' : 'no permalink stored';
+  slack.addEventListener('click', (e) => { e.stopPropagation(); openInSlack(it.id); });
+  hb.appendChild(slack);
+  r1.appendChild(hb);
+
+  r2.appendChild(el('span', 'udot'));
+  r2.appendChild(el('span', 'ddone', '✓'));
+  const lm = it.last_message;
+  r2.appendChild(el('span', 'sender', (lm && lm.author_name) || 'unknown'));
+  r2.appendChild(el('span', 'snippet', plainText(lm && lm.text, null) || '—'));
+
+  r3.appendChild(el('span', 'spark', '✦'));
+  if (it.why) {
+    const w = el('span', 'why', it.why);
+    w.title = it.why;
+    r3.appendChild(w);
+  } else {
+    r3.appendChild(el('span', 'why shimmer', 'Analyzing…'));
+  }
+}
+
+function renderFeed() {
+  if (!state.loaded && !state.items.length) {
+    if (state.feedError) {
+      const p = el('div', 'placeholder');
+      p.innerHTML = html`<b>Can't reach the feed</b>${state.feedError}<br>Retrying every ${POLL_MS / 1000}s — is <span class="kbd">npm run dev</span> still up?`;
+      feedListEl.replaceChildren(p);
+    } else {
+      feedListEl.replaceChildren(skeletonFeed());
+    }
+    return;
+  }
+  const { pending, ranked, flat } = visibleItems();
+  if (!flat.length) {
+    const names = Array.from(new Set(state.items.map((i) => i.team_name).filter(Boolean)));
+    const p = el('div', 'placeholder');
+    p.innerHTML = state.tab === 'done'
+      ? html`<b>Nothing done yet</b>Press <span class="kbd">e</span> on a thread to file it here.`
+      : html`<b>No DMs or mentions yet</b>${names.length ? 'Watching ' + names.join(' + ') + '.' : 'Watching your Slack workspaces.'}<br>New threads land here the moment they arrive.`;
+    feedListEl.replaceChildren(p);
+    return;
+  }
+
+  // keep the cursored card visually anchored across live re-sorts
+  const selBefore = cardEls.get(state.cursor);
+  const topBefore = selBefore && selBefore.isConnected ? selBefore.getBoundingClientRect().top : null;
+
+  const frag = document.createDocumentFragment();
+  if (pending.length) {
+    const g = el('div', 'group-label');
+    g.appendChild(el('span', 'spin', '…'));
+    g.appendChild(el('span', null, 'Analyzing · ' + pending.length));
+    frag.appendChild(g);
+    pending.forEach((it) => frag.appendChild(cardFor(it)));
+  }
+  if (ranked.length) {
+    frag.appendChild(el('div', 'group-label',
+      state.tab === 'done' ? 'Done' : state.tab === 'all' ? 'All threads' : 'Inbox'));
+    ranked.forEach((it) => frag.appendChild(cardFor(it)));
+  }
+  feedListEl.replaceChildren(frag);
+
+  // one 300ms pulse for genuinely new arrivals
+  const first = state.knownIds.size === 0;
+  flat.forEach((it) => {
+    if (!state.knownIds.has(it.id)) {
+      state.knownIds.add(it.id);
+      if (!first) {
+        const c = cardEls.get(it.id);
+        if (c) { c.classList.add('pulse'); setTimeout(() => c.classList.remove('pulse'), 320); }
+      }
+    }
+  });
+  cardEls.forEach((_, id) => { if (!state.items.some((i) => i.id === id)) cardEls.delete(id); });
+
+  if (topBefore !== null) {
+    const selAfter = cardEls.get(state.cursor);
+    if (selAfter && selAfter.isConnected) {
+      feedListEl.scrollTop += selAfter.getBoundingClientRect().top - topBefore;
+    }
+  }
+}
+
+function scrollCursorIntoView() {
+  const c = cardEls.get(state.cursor);
+  if (c && c.isConnected) c.scrollIntoView({ block: 'nearest' });
+}
+
+/* ------------------------------- thread ---------------------------------- */
+
+function renderThread() {
+  const it = itemById(state.cursor);
+  if (!it) {
+    if (threadEl.dataset.sig === 'none') return;
+    threadEl.dataset.sig = 'none';
+    const p = el('div', 'placeholder');
+    p.innerHTML = html`<b>Select a thread</b><span class="kbd">j</span> / <span class="kbd">k</span> to move · <span class="kbd">enter</span> to open`;
+    threadEl.replaceChildren(p);
+    return;
+  }
+  const d = state.detail && state.detail.id === it.id ? state.detail : null;
+  const a = d ? d.analysis : null;
+
+  // The 5s poll re-renders everything; rebuilding an unchanged transcript would
+  // reset its scroll and steal focus mid-read. Only rebuild on a real change
+  // (the minute bucket keeps "analyzed 6m ago" honest).
+  const sig = JSON.stringify([it.id, it.status, it.last_activity, it.permalink, it.message_count,
+    d ? d.messages.length : -1, d && d.messages.length ? d.messages[d.messages.length - 1].ts : null,
+    a && [a.urgency, a.why, a.summary, a.suggested_action, a.context_notes, a.covered_through_ts, a.analyzed_at],
+    state.detailLoading, state.detailError, collapsedSet().has(it.id), Math.floor(Date.now() / 60000)]);
+  if (threadEl.dataset.sig === sig) return;
+  threadEl.dataset.sig = sig;
+
+  const old = document.getElementById('tscroll');
+  const keepTop = old ? old.scrollTop : 0;
+  const hadFocus = old && document.activeElement === old;
+
+  const names = {};
+  if (d) d.messages.forEach((m) => { if (m.author_id && m.author_name) names[m.author_id] = m.author_name; });
+
+  threadEl.replaceChildren(threadHeader(it, d), threadScroll(it, d, a, names));
+
+  const next = document.getElementById('tscroll');
+  if (next) {
+    next.scrollTop = keepTop;
+    if (hadFocus || state.focusPane === 'thread') next.focus({ preventScroll: true });
+  }
+}
+
+function threadHeader(it, d) {
+  const h = el('div', 'thead');
+  h.appendChild(wsBadge(it));
+  h.appendChild(el('span', 'title', channelLabel(it)));
+  const bits = [it.kind === 'mention' ? 'mention' : 'DM', it.team_name || it.workspace];
+  const n = d ? d.messages.length : it.message_count;
+  bits.push(n + (n === 1 ? ' message' : ' messages'));
+  if (it.last_activity) bits.push('updated ' + clockTime(it.last_activity));
+  h.appendChild(el('span', 'sub', bits.join(' · ')));
+
+  const act = el('div', 'tactions');
+  const chat = el('button', 'btn primary');
+  chat.appendChild(document.createTextNode('Discuss with Claude'));
+  chat.appendChild(el('span', 'key', 'c'));
+  chat.addEventListener('click', () => openChat(it.id, ''));
+  act.appendChild(chat);
+
+  const slack = el('button', 'btn');
+  slack.appendChild(document.createTextNode('Open in Slack'));
+  slack.appendChild(el('span', 'key', 's'));
+  slack.disabled = !httpUrlOrNull(it.permalink);
+  if (slack.disabled) slack.title = 'no permalink stored for this thread';
+  slack.addEventListener('click', () => openInSlack(it.id));
+  act.appendChild(slack);
+
+  const done = el('button', 'btn');
+  done.appendChild(document.createTextNode(it.status === 'done' ? 'Reopen' : 'Done'));
+  if (it.status !== 'done') done.appendChild(el('span', 'key', 'e'));
+  done.addEventListener('click', () => {
+    if (it.status === 'done') setStatus(it.id, 'new'); else markDoneAndAdvance(it.id);
+  });
+  act.appendChild(done);
+
+  const more = el('button', 'btn', '⋯');
+  more.title = 'more actions';
+  more.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const open = act.querySelector('.menu');
+    if (open) { open.remove(); return; }
+    const menu = el('div', 'menu');
+    const unseen = el('button', null, 'Mark unseen (u)');
+    unseen.addEventListener('click', () => { setStatus(it.id, 'new'); menu.remove(); });
+    menu.appendChild(unseen);
+    const re = el('button', null, 'Re-analyze');
+    re.disabled = true;
+    re.title = 'needs POST /api/thread/:id/reanalyze — the analyzer re-runs on new activity for now';
+    menu.appendChild(re);
+    act.appendChild(menu);
+    setTimeout(() => document.addEventListener('click', function off() {
+      menu.remove(); document.removeEventListener('click', off);
+    }, { once: true }), 0);
+  });
+  act.appendChild(more);
+  h.appendChild(act);
+  return h;
+}
+
+function threadScroll(it, d, a, names) {
+  const scroll = el('div', 'tscroll');
+  scroll.id = 'tscroll';
+  scroll.tabIndex = -1;
+  const body = el('div', 'tbody');
+
+  body.appendChild(analysisCard(it, d, a));
+
+  if (!d) {
+    body.appendChild(el('div', 'placeholder',
+      state.detailError ? 'Could not load this thread (' + state.detailError + ') — retrying on the next poll.' : 'Loading transcript…'));
+    scroll.appendChild(body);
+    return scroll;
+  }
+
+  const covered = a && a.covered_through_ts ? parseFloat(a.covered_through_ts) : null;
+  let lastDay = null, prev = null, staleShown = false;
+  d.messages.forEach((m) => {
+    let breakGroup = false;
+    const day = startOfDay(tsMs(m.ts));
+    if (day !== lastDay) {
+      body.appendChild(el('div', 'divider', dayLabel(m.ts)));
+      lastDay = day; breakGroup = true;
+    }
+    if (covered !== null && !staleShown && parseFloat(m.ts) > covered + 0.0001) {
+      body.appendChild(el('div', 'divider stale-div', 'new since last analysis'));
+      staleShown = true; breakGroup = true;
+    }
+    const same = !breakGroup && prev && prev.author_id === m.author_id &&
+      Math.abs(tsMs(m.ts) - tsMs(prev.ts)) < 300000;
+
+    const row = el('div', 'msg' + (same ? '' : ' first'));
+    const author = m.author_name || m.author_id || 'unknown';
+    if (same) {
+      row.appendChild(el('div', 'avatar ghost'));
+      const b = el('div', 'mbody');
+      const txt = el('div', 'mtext');
+      txt.appendChild(renderMrkdwn(m.text, names));
+      b.appendChild(txt);
+      row.appendChild(b);
+    } else {
+      row.appendChild(el('div', 'avatar', initials(author)));
+      const b = el('div', 'mbody');
+      const head = el('div', 'mhead');
+      head.appendChild(el('span', 'mauthor', author));
+      const tm = el('span', 'mtime', clockTime(m.ts));
+      tm.title = new Date(tsMs(m.ts)).toLocaleString();
+      head.appendChild(tm);
+      b.appendChild(head);
+      const txt = el('div', 'mtext');
+      txt.appendChild(renderMrkdwn(m.text, names));
+      b.appendChild(txt);
+      row.appendChild(b);
+    }
+    body.appendChild(row);
+    prev = m;
+  });
+
+  if (!d.messages.length) body.appendChild(el('div', 'placeholder', 'No messages stored for this thread yet.'));
+
+  const cta = el('div', 'endcta');
+  cta.appendChild(document.createTextNode('End of thread · '));
+  const b = el('button', null, 'Discuss with Claude');
+  b.addEventListener('click', () => openChat(it.id, ''));
+  cta.appendChild(b);
+  cta.appendChild(el('span', 'key', 'c'));
+  body.appendChild(cta);
+
+  scroll.appendChild(body);
+  return scroll;
+}
+
+function initials(name) {
+  const parts = String(name || '?').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+const COLLAPSE_KEY = 'copilot-analysis-collapsed';
+function collapsedSet() {
+  try { return new Set(JSON.parse(sessionStorage.getItem(COLLAPSE_KEY) || '[]')); }
+  catch (_) { return new Set(); }
+}
+function setCollapsed(id, on) {
+  const s = collapsedSet();
+  if (on) s.add(id); else s.delete(id);
+  try { sessionStorage.setItem(COLLAPSE_KEY, JSON.stringify(Array.from(s))); } catch (_) {}
+}
+
+function parseNotes(s) {
+  return String(s || '').split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
+    const m = /^[-•*]?\s*\[([^\]]{1,32})\]\s*(.*)$/.exec(l);
+    return m ? { source: m[1], text: m[2] } : { source: null, text: l.replace(/^[-•*]\s*/, '') };
+  });
+}
+
+function analysisCard(it, d, a) {
+  const card = el('div', 'analysis');
+  const collapsed = collapsedSet().has(it.id);
+  if (collapsed) card.classList.add('collapsed');
+
+  if (!a) {
+    card.classList.add('pending');
+    const body = el('div', 'abody');
+    const why = el('div', 'awhy');
+    why.appendChild(el('span', 'chip pending', '…'));
+    why.appendChild(el('span', 'whytext', d ? 'Analyzing this thread…' : 'Loading…'));
+    body.appendChild(why);
+    [70, 92, 55].forEach((w) => { const s = el('div', 'askel'); s.style.width = w + '%'; body.appendChild(s); });
+    card.appendChild(body);
+    card.appendChild(el('div', 'ameta', 'the analyzer picks threads up ~45s after the last message'));
+    return card;
+  }
+
+  const stale = isStale(it);
+  if (stale) {
+    const n = staleCount(it);
+    card.appendChild(el('div', 'stalebanner',
+      '⚠ ' + (n ? n + (n === 1 ? ' reply' : ' replies') : 'New replies') + ' since this analysis — re-analyzing…'));
+  }
+
+  const body = el('div', 'abody');
+  const why = el('div', 'awhy');
+  const u = RANK[a.urgency] !== undefined ? a.urgency : null;
+  why.appendChild(u ? el('span', 'chip c' + u.charAt(1), u) : el('span', 'chip pending', '…'));
+  why.appendChild(el('span', 'whytext', a.why || 'No summary line returned.'));
+  const chev = el('button', 'chev', collapsed ? '▸' : '▾');
+  chev.title = collapsed ? 'expand analysis' : 'collapse analysis';
+  chev.addEventListener('click', () => { setCollapsed(it.id, !collapsed); renderThread(); });
+  why.appendChild(chev);
+  body.appendChild(why);
+
+  if (a.summary) {
+    const s = el('div', 'asec');
+    s.appendChild(el('b', null, 'Summary'));
+    s.appendChild(document.createTextNode(' — ' + a.summary));
+    body.appendChild(s);
+  }
+  if (a.suggested_action) {
+    const row = el('div', 'asec action-row');
+    const span = el('span');
+    span.appendChild(el('b', null, 'Suggested action'));
+    span.appendChild(document.createTextNode(' — ' + a.suggested_action));
+    row.appendChild(span);
+    const btn = el('button', 'draftbtn', 'Draft this reply →');
+    btn.addEventListener('click', () => openChat(it.id, 'Draft the suggested reply.'));
+    row.appendChild(btn);
+    body.appendChild(row);
+  }
+  const notes = parseNotes(a.context_notes);
+  if (notes.length) {
+    const s = el('div', 'asec');
+    s.appendChild(el('b', null, 'Context'));
+    const ul = el('ul', 'ctx');
+    notes.forEach((n) => {
+      const li = el('li');
+      if (n.source) li.appendChild(el('span', 'src', n.source));
+      li.appendChild(document.createTextNode(n.text));
+      ul.appendChild(li);
+    });
+    s.appendChild(ul);
+    body.appendChild(s);
+  }
+  card.appendChild(body);
+
+  const meta = el('div', 'ameta');
+  const ago = agoFromIso(a.analyzed_at);
+  meta.appendChild(el('span', null, 'analyzed ' + (ago || 'at an unknown time')));
+  if (a.covered_through_ts) meta.appendChild(el('span', null, '· covered through ' + clockTime(a.covered_through_ts)));
+  const re = el('span', 'muted-link', '· re-analyze');
+  re.title = 'needs POST /api/thread/:id/reanalyze — for now the analyzer re-runs itself when new replies arrive';
+  meta.appendChild(re);
+  card.appendChild(meta);
+  return card;
+}
+
+/* -------------------------------- chat ----------------------------------- */
+
+function openChat(id, seed) {
+  if (id != null && id !== state.cursor) setCursor(id, { markSeen: true });
+  else if (id != null) { const it = itemById(id); if (it && it.status === 'new') setStatus(id, 'seen'); }
+  state.chatOpen = true;
+  state.chatSeed = seed || state.chatSeed;
+  state.focusPane = 'chat';
+  document.body.classList.remove('chat-closed');
+  renderChat();
+  const ta = document.getElementById('composer');
+  if (ta) { if (seed) ta.value = seed; ta.focus(); }
+}
+function closeChat() {
+  state.chatOpen = false;
+  state.chatSeed = '';
+  state.chatNote = '';
+  document.body.classList.add('chat-closed');
+  state.focusPane = 'thread';
+  renderChat();
+}
+
+function renderChat() {
+  if (!state.chatOpen) {
+    if (chatEl.dataset.sig !== 'closed') { chatEl.dataset.sig = 'closed'; chatEl.replaceChildren(); }
+    return;
+  }
+  const it = itemById(state.cursor);
+  // same reasoning as renderThread: never rebuild the composer under the user's cursor
+  const sig = JSON.stringify([it ? it.id : null, it ? channelLabel(it) : null, state.chatNote, !!state.chatSeed]);
+  if (chatEl.dataset.sig === sig) return;
+  chatEl.dataset.sig = sig;
+  const hadFocus = document.activeElement && document.activeElement.id === 'composer';
+  const caret = hadFocus ? document.activeElement.selectionStart : null;
+  const head = el('div', 'chead');
+  head.appendChild(el('span', 'who', 'Claude — ' + (it ? channelLabel(it) : 'no thread')));
+  const sess = el('span', 'sess');
+  sess.appendChild(el('i'));
+  sess.appendChild(el('span', null, 'no session'));
+  sess.title = 'sessions arrive with the chat step';
+  head.appendChild(sess);
+  const x = el('button', 'cclose', '×');
+  x.title = 'close (esc)';
+  x.addEventListener('click', closeChat);
+  head.appendChild(x);
+
+  const body = el('div', 'cbody');
+  body.appendChild(el('div', 'sysnote', '— chat is not wired up yet —'));
+  const info = el('div', 'chatinfo');
+  info.innerHTML = html`<h4>What lands here</h4>A Claude Code session scoped to <b>${it ? channelLabel(it) : 'the selected thread'}</b>, seeded with the transcript and the analysis above.
+    <ul>
+      <li>streaming replies with inline MCP tool rows</li>
+      <li>a draft-reply card that only posts when you click send</li>
+      <li>one resumable session per thread</li>
+    </ul>`;
+  body.appendChild(info);
+  if (state.chatSeed) {
+    body.appendChild(el('div', 'sysnote', 'seeded prompt kept in the composer below'));
+  }
+  if (state.chatNote) body.appendChild(el('div', 'sysnote', state.chatNote));
+
+  const comp = el('div', 'composer');
+  const ta = el('textarea');
+  ta.id = 'composer';
+  ta.placeholder = 'Message Claude about this thread…';
+  ta.value = state.chatSeed || '';
+  ta.addEventListener('input', () => { state.chatSeed = ta.value; });
+  ta.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); notWired(); }
+    if (e.key === 'Escape') { e.preventDefault(); closeChat(); }
+  });
+  comp.appendChild(ta);
+  const row = el('div', 'crow');
+  const send = el('button', 'csend', 'Send');
+  send.disabled = true;
+  send.title = 'the chat endpoint does not exist yet';
+  row.appendChild(send);
+  row.appendChild(el('span', 'chint', 'enter to send · shift+enter newline'));
+  row.appendChild(el('span', 'cnote', 'Chat arrives with the Claude session step — nothing is sent yet.'));
+  comp.appendChild(row);
+
+  chatEl.replaceChildren(head, body, comp);
+  if (hadFocus) {
+    ta.focus();
+    if (caret != null) { try { ta.setSelectionRange(caret, caret); } catch (_) {} }
+  }
+}
+function notWired() {
+  state.chatNote = 'Not sent — this panel is a shell until the Claude session endpoint exists.';
+  renderChat();
+  const ta = document.getElementById('composer');
+  if (ta) ta.focus();
+}
+
+/* --------------------------- title + favicon ----------------------------- */
+
+let badgeAt = 0, badgeTimer = null;
+function renderTitleBadge() {
+  const now = Date.now();
+  if (now - badgeAt < 1000) {
+    clearTimeout(badgeTimer);
+    badgeTimer = setTimeout(renderTitleBadge, 1000 - (now - badgeAt));
+    return;
+  }
+  badgeAt = now;
+  const unseen = state.items.filter((i) => i.status === 'new' && (i.urgency === 'P0' || i.urgency === 'P1'));
+  const p0 = unseen.some((i) => i.urgency === 'P0');
+  const n = unseen.length;
+  document.title = n ? '(' + n + (p0 ? '!' : '') + ') Slack Copilot' : 'Slack Copilot';
+  drawFavicon(n, p0);
+}
+
+let faviconLink = null;
+function drawFavicon(count, p0) {
+  const c = document.createElement('canvas');
+  c.width = 32; c.height = 32;
+  const g = c.getContext('2d');
+  if (!g) return;
+  g.fillStyle = '#151b23';
+  roundRect(g, 0, 0, 32, 32, 7); g.fill();
+  g.strokeStyle = '#4c8dff'; g.lineWidth = 3; g.lineCap = 'round';
+  g.beginPath(); g.moveTo(7, 20); g.quadraticCurveTo(16, 27, 25, 20); g.stroke();
+  g.fillStyle = '#4c8dff';
+  g.beginPath(); g.arc(11, 12, 2, 0, Math.PI * 2); g.fill();
+  g.beginPath(); g.arc(21, 12, 2, 0, Math.PI * 2); g.fill();
+  if (count > 0) {
+    g.fillStyle = p0 ? '#f85149' : '#f0883e';
+    g.beginPath(); g.arc(24, 8, 8, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#0d1117';
+    g.font = 'bold 11px -apple-system, sans-serif';
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText(count > 9 ? '9+' : String(count), 24, 8.5);
+  }
+  if (!faviconLink) {
+    faviconLink = document.createElement('link');
+    faviconLink.rel = 'icon';
+    document.head.appendChild(faviconLink);
+  }
+  faviconLink.href = c.toDataURL('image/png');
+}
+function roundRect(g, x, y, w, h, r) {
+  g.beginPath();
+  g.moveTo(x + r, y);
+  g.arcTo(x + w, y, x + w, y + h, r);
+  g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r);
+  g.arcTo(x, y, x + w, y, r);
+  g.closePath();
+}
+
+/* ------------------------------- help ------------------------------------ */
+
+const SHORTCUTS = [
+  ['j / ↓', 'Move cursor down — previews, does not mark seen'],
+  ['k / ↑', 'Move cursor up'],
+  ['enter / o', 'Open: mark seen and focus the thread pane'],
+  ['e', 'Mark done and advance'],
+  ['u', 'Mark unseen'],
+  ['c', 'Open the Claude chat panel (marks seen)'],
+  ['s', 'Open the thread in Slack (never changes status)'],
+  ['esc', 'Close chat → focus thread → focus feed'],
+  ['1 / 2 / 3', 'Inbox / Done / All'],
+  ['?', 'This overlay'],
+];
+function toggleHelp(on) {
+  const card = document.getElementById('helpcard');
+  if (on) {
+    const frag = document.createDocumentFragment();
+    const h = el('h3', null, 'Keyboard');
+    h.appendChild(el('span', null, 'esc or ? to close'));
+    frag.appendChild(h);
+    SHORTCUTS.forEach(([k, v]) => {
+      const r = el('div', 'helprow');
+      r.appendChild(el('kbd', null, k));
+      r.appendChild(el('span', null, v));
+      frag.appendChild(r);
+    });
+    frag.appendChild(el('div', 'helpsec',
+      'j/k deliberately do not mark threads seen — the tab badge only counts unseen P0/P1, so skimming never clears it.'));
+    card.replaceChildren(frag);
+  }
+  overlayEl.classList.toggle('on', !!on);
+}
+overlayEl.addEventListener('click', () => toggleHelp(false));
+
+/* ------------------------------ keyboard --------------------------------- */
+
+document.addEventListener('keydown', (e) => {
+  const tag = e.target && e.target.tagName;
+  const typing = tag === 'TEXTAREA' || tag === 'INPUT' || (e.target && e.target.isContentEditable);
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+  if (overlayEl.classList.contains('on')) {
+    if (e.key === 'Escape' || e.key === '?') { e.preventDefault(); toggleHelp(false); }
+    return;
+  }
+  if (typing) return;   // the composer handles its own keys
+
+  switch (e.key) {
+    case 'j': advanceCursor(1); state.focusPane = 'feed'; e.preventDefault(); break;
+    case 'k': advanceCursor(-1); state.focusPane = 'feed'; e.preventDefault(); break;
+    case 'ArrowDown': if (state.focusPane === 'feed') { advanceCursor(1); e.preventDefault(); } break;
+    case 'ArrowUp': if (state.focusPane === 'feed') { advanceCursor(-1); e.preventDefault(); } break;
+    case 'Enter':
+    case 'o': {
+      if (state.cursor == null) break;
+      const it = itemById(state.cursor);
+      if (it && it.status === 'new') setStatus(it.id, 'seen');
+      state.focusPane = 'thread';
+      const s = document.getElementById('tscroll');
+      if (s) s.focus();
+      e.preventDefault();
+      break;
+    }
+    case 'e': if (state.cursor != null) { markDoneAndAdvance(state.cursor); e.preventDefault(); } break;
+    case 'u': if (state.cursor != null) { setStatus(state.cursor, 'new'); e.preventDefault(); } break;
+    case 'c': if (state.cursor != null) { openChat(state.cursor, ''); e.preventDefault(); } break;
+    case 's': if (state.cursor != null) { openInSlack(state.cursor); e.preventDefault(); } break;
+    case 'Escape':
+      if (state.chatOpen) closeChat();
+      else if (state.focusPane === 'thread') { state.focusPane = 'feed'; document.activeElement && document.activeElement.blur(); }
+      e.preventDefault();
+      break;
+    case '1': switchTab('inbox'); e.preventDefault(); break;
+    case '2': switchTab('done'); e.preventDefault(); break;
+    case '3': switchTab('all'); e.preventDefault(); break;
+    case '?': toggleHelp(true); e.preventDefault(); break;
+    default: break;
+  }
 });
 
-refresh();
-setInterval(refresh, 8000);
+function switchTab(tab) {
+  if (state.tab === tab) return;
+  state.tab = tab;
+  document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === tab));
+  state.cursor = null;
+  ensureCursor();
+  renderFeed(); renderStatuses(); renderThread();
+}
+document.getElementById('tabs').addEventListener('click', (e) => {
+  const t = e.target.closest('.tab');
+  if (t) switchTab(t.dataset.tab);
+});
+
+/* -------------------------------- boot ----------------------------------- */
+
+const hashMatch = /^#\/t\/(\d+)$/.exec(location.hash);
+if (hashMatch) state.cursor = Number(hashMatch[1]);
+
+renderFeed();
+renderThread();
+renderTitleBadge();
+loadFeed().then(() => { if (state.cursor != null && !state.detail) loadDetail(state.cursor); });
+
+// 5s while the tab is visible; still every ~30s when it is not, so a background
+// tab (or an embedded view that always reports itself hidden) never goes stale.
+let tick = 0;
+setInterval(() => { tick++; if (!document.hidden || tick % 6 === 0) loadFeed(); }, POLL_MS);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) loadFeed(); });
+// relative timestamps drift; repaint the feed once a minute even without new data
+setInterval(() => { cardEls.forEach((c) => { c.dataset.sig = ''; }); renderFeed(); }, 60000);
 </script>
 </body>
 </html>
