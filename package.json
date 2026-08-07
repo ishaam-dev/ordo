@@ -3,6 +3,7 @@
   "version": "0.2.0",
   "private": true,
   "license": "MIT",
+  "author": "Akshay Maniyar (aksman-dev)",
   "description": "Local Slack copilot: prioritized feed of DMs/mentions, analyzed by Claude, with Claude Code chat",
   "type": "module",
   "scripts": {
