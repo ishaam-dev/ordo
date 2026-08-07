@@ -235,7 +235,9 @@ test('/api/status reports analyzer, server and workspace health', async () => {
   assert.ok(['idle', 'analyzing', 'disabled', 'error'].includes(body.analyzer.state));
   assert.equal(typeof body.analyzer.queued, 'number');
   assert.match(body.server.startedAt, /^\d{4}-\d{2}-\d{2}T/);
-  assert.equal(body.server.version, '0.1.0');
+  // The reported version is package.json's — assert the shape, not a number that
+  // every release bump would break.
+  assert.match(String(body.server.version), /^\d+\.\d+\.\d+$/);
   assert.deepEqual(body.workspaces, [], 'no tokens are configured in a test process');
 });
 
