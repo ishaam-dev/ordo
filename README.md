@@ -969,3 +969,7 @@ Build output lives in `release/` and `electron/assets/` +
 `data.db*`.
 
 </details>
+
+## License
+
+MIT — see [LICENSE](LICENSE). Do what you like with it; just don't blame us if your inbox talks back.

@@ -384,6 +384,9 @@
   .divider{display:flex;align-items:center;gap:10px;color:var(--text-3);font-size:10.5px;
     font-family:var(--mono);margin:14px 0 8px}
   .divider::before,.divider::after{content:"";flex:1;border-top:1px solid var(--border)}
+  .daytoggle{background:none;border:0;width:100%;cursor:pointer;font-family:inherit;
+    font-size:10.5px;padding:0}
+  .daytoggle:hover{color:var(--text-2)}
   .divider.stale-div{color:var(--warn)}
   .divider.stale-div::before,.divider.stale-div::after{border-color:var(--line-warn)}
   .msg{display:flex;gap:10px;padding:3px 0}
@@ -958,6 +961,7 @@ const state = {
   statusError: null,
   reanalyze: new Map(),    // thread id -> 'busy' | 'queued' (transient UI state)
   handoff: new Map(),      // thread id -> "Continue in Claude Code" state (see loadHandoff)
+  dayFolds: new Map(),     // thread id -> Map(dayStartMs -> bool) manual fold overrides
 };
 
 const feedListEl = document.getElementById('feedlist');
@@ -1902,7 +1906,8 @@ function renderThread() {
     a && [a.urgency, a.why, a.summary, a.suggested_action, a.context_notes, a.covered_through_ts, a.analyzed_at],
     state.detailLoading, state.detailError, collapsedSet().has(it.id), Math.floor(Date.now() / 60000),
     analyzerSig(), state.reanalyze.get(it.id) || null, handoffSig(it.id),
-    d && (d.items || []).map((i) => [i.id, i.status, i.user_done, i.urgency].join(':')).join(',')]);
+    d && (d.items || []).map((i) => [i.id, i.status, i.user_done, i.urgency].join(':')).join(','),
+    Array.from(dayOverrides(it.id).entries()).map((e) => e.join(':')).join('|')]);
   if (threadEl.dataset.sig === sig) return;
   threadEl.dataset.sig = sig;
 
@@ -1988,6 +1993,13 @@ function threadHeader(it, d) {
   return h;
 }
 
+/** Manual open/close choices for a thread's day groups, kept across re-renders. */
+function dayOverrides(threadId) {
+  let m = state.dayFolds.get(threadId);
+  if (!m) { m = new Map(); state.dayFolds.set(threadId, m); }
+  return m;
+}
+
 function threadScroll(it, d, a, names) {
   const scroll = el('div', 'tscroll');
   scroll.id = 'tscroll';
@@ -2008,14 +2020,50 @@ function threadScroll(it, d, a, names) {
   }
 
   const covered = a && a.covered_through_ts ? parseFloat(a.covered_through_ts) : null;
-  let lastDay = null, prev = null, staleShown = false;
+
+  // Day groups, so a long-running thread folds its history away: the newest day stays
+  // open, days with messages the analysis has not covered stay open (collapsing exactly
+  // the unread part would hide what changed), everything older starts collapsed.
+  const groups = [];
   d.messages.forEach((m) => {
-    let breakGroup = false;
     const day = startOfDay(tsMs(m.ts));
-    if (day !== lastDay) {
-      body.appendChild(el('div', 'divider', dayLabel(m.ts)));
-      lastDay = day; breakGroup = true;
+    const g = groups[groups.length - 1];
+    if (!g || g.day !== day) groups.push({ day, label: dayLabel(m.ts), messages: [m] });
+    else g.messages.push(m);
+  });
+
+  const overrides = dayOverrides(it.id);
+  let staleShown = false;
+  groups.forEach((g, gi) => {
+    const isLast = gi === groups.length - 1;
+    const hasFresh = covered !== null &&
+      parseFloat(g.messages[g.messages.length - 1].ts) > covered + 0.0001;
+    const defaultOpen = isLast || hasFresh || groups.length === 1;
+    const open = overrides.has(g.day) ? overrides.get(g.day) : defaultOpen;
+
+    if (groups.length > 1) {
+      const n = g.messages.length;
+      const head = el('button', 'divider daytoggle',
+        (open ? '▾ ' : '▸ ') + g.label + (open ? '' : ' · ' + n + (n === 1 ? ' message' : ' messages')));
+      head.title = open ? 'collapse this day' : 'show this day';
+      head.addEventListener('click', () => {
+        overrides.set(g.day, !open);
+        renderThread();
+      });
+      body.appendChild(head);
+    } else {
+      body.appendChild(el('div', 'divider', g.label));
     }
+    if (!open) {
+      // The fold hides the stale divider's slot too; keep the bookkeeping straight so
+      // it doesn't surface at the top of some later, unrelated day.
+      if (hasFresh) staleShown = true;
+      return;
+    }
+
+    let prev = null;
+    g.messages.forEach((m) => {
+    let breakGroup = prev === null;
     if (covered !== null && !staleShown && parseFloat(m.ts) > covered + 0.0001) {
       body.appendChild(el('div', 'divider stale-div', 'new since last analysis'));
       staleShown = true; breakGroup = true;
@@ -2052,6 +2100,7 @@ function threadScroll(it, d, a, names) {
     }
     body.appendChild(row);
     prev = m;
+    });
   });
 
   if (!d.messages.length) body.appendChild(el('div', 'placeholder', 'No messages stored for this thread yet.'));
