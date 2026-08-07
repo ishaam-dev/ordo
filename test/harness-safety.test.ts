@@ -190,7 +190,10 @@ test('claude-code wires BOTH canUseTool and the PreToolUse hook to the core gate
     () => undefined,
   );
 
-  assert.deepEqual(options.tools, [], 'no built-in tools at all');
+  // The one built-in is the tool-discovery stub: without it in `tools`, the CLI ignores
+  // ENABLE_TOOL_SEARCH and eagerly loads every attached MCP server's schemas (measured
+  // live: ~90k tokens of connector schemas vs ~3.9k with deferral).
+  assert.deepEqual(options.tools, ['ToolSearch'], 'discovery stub only — nothing side-effect-capable');
   assert.equal(typeof options.canUseTool, 'function');
   const hook = options.hooks?.PreToolUse?.[0]?.hooks?.[0];
   assert.equal(typeof hook, 'function');
@@ -198,6 +201,11 @@ test('claude-code wires BOTH canUseTool and the PreToolUse hook to the core gate
   assert.deepEqual(options.settingSources, ['user']);
   assert.equal(options.persistSession, true);
   assert.equal(options.includePartialMessages, undefined, 'an analysis never streams deltas');
+  assert.equal(
+    (options.env as Record<string, string>).ENABLE_TOOL_SEARCH,
+    'true',
+    'MCP schemas must be deferred behind tool search, not eagerly loaded into context',
+  );
 
   for (const name of MUTATING) {
     const perCall = await options.canUseTool!(name, {}, {} as never);
@@ -213,6 +221,32 @@ test('claude-code wires BOTH canUseTool and the PreToolUse hook to the core gate
   // A read-only MCP tool is still allowed — otherwise the gate proves nothing.
   const allowed = await options.canUseTool!('mcp__calendar__list_events', {}, {} as never);
   assert.equal(allowed?.behavior, 'allow');
+});
+
+test('claude-code respects an ENABLE_TOOL_SEARCH the environment already sets', () => {
+  const access = resolveToolAccess(REGISTRY['claude-code'], 'analysis');
+  const abort = new AbortController();
+  const options = claude.buildOptions(
+    {
+      purpose: 'analysis',
+      systemPrompt: 's',
+      prompt: 'p',
+      session: { mode: 'seed', id: null },
+      tools: access,
+      maxTurns: 8,
+      timeoutMs: 1_000,
+      abort: abort.signal,
+      env: { ENABLE_TOOL_SEARCH: 'false' },
+      cwd: projectRoot,
+    },
+    abort,
+    () => undefined,
+  );
+  assert.equal(
+    (options.env as Record<string, string>).ENABLE_TOOL_SEARCH,
+    'false',
+    'the default must not clobber a deliberate override',
+  );
 });
 
 test('claude-code: the PreToolUse net never consumes the call budget', async () => {
@@ -254,6 +288,30 @@ test('chat gets its own budget (8) and its own wording', () => {
   );
 });
 
+test('tool discovery (ToolSearch) passes both nets and never consumes the budget', () => {
+  // With MCP deferral on, schemas are found via ToolSearch. A gate that refused it would
+  // silently turn "read-only tools" into "no tools"; a gate that metered it would spend
+  // lookups on finding out what a lookup could be.
+  assert.equal(isToolAllowed('ToolSearch'), true);
+  const access = resolveToolAccess(REGISTRY['claude-code'], 'analysis');
+  assert.equal(access.mode, 'read-only');
+  if (access.mode !== 'read-only') return;
+
+  // 20 discovery calls burn nothing…
+  for (let i = 0; i < 20; i++) assert.equal(access.gate('ToolSearch').allow, true);
+  // …the full lookup budget is still there…
+  for (let i = 0; i < access.maxCalls; i++) {
+    assert.equal(access.gate('mcp__calendar__list_events').allow, true);
+  }
+  assert.equal(access.gate('mcp__calendar__list_events').allow, false, 'budget spent');
+  // …and discovery still works after the budget is gone (turns are its only cost).
+  assert.equal(access.gate('ToolSearch').allow, true);
+  assert.equal(access.nameGate('ToolSearch').allow, true);
+  // Only the exact discovery name is exempt from the mcp__ prefix rule.
+  assert.equal(isToolAllowed('ToolSearchEvil'), false);
+  assert.equal(isToolAllowed('toolsearch'), false);
+});
+
 // ---------------------------------------------------------------------------
 // the analyzer path, end to end, with an injected provider
 // ---------------------------------------------------------------------------
@@ -278,10 +336,10 @@ test('the analyzer drives a provider end to end and stores the verdict', async (
 
   const req = fake.requests[0];
   assert.equal(req.purpose, 'analysis');
-  // Turns are pinned to the tool budget + 4: a lookup costs a turn, and running out of
-  // turns fails the analysis outright while running out of budget just asks for the
-  // verdict. Raised with the budget (5→10 lookups, 8→14 turns).
-  assert.equal(req.maxTurns, 14);
+  // Turns are pinned to the tool budget + 8: lookups AND unmetered tool-discovery calls
+  // (ToolSearch, with MCP deferral on) each cost a turn, and running out of turns fails
+  // the analysis outright while running out of budget just asks for the verdict.
+  assert.equal(req.maxTurns, 18);
   assert.equal(req.timeoutMs, 180_000);
   assert.deepEqual(req.session, { mode: 'seed', id: null });
   assert.equal(req.tools.mode, 'read-only', 'a proven read-only harness gets the core gate');

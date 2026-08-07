@@ -290,8 +290,64 @@ test('chat hands the provider the core gate, and it refuses the send path mid-tu
     ],
   );
   assert.equal(fake.requests[0].purpose, 'chat');
-  assert.equal(fake.requests[0].maxTurns, 12);
+  // Tool budget (8) + 8 turns of headroom — lookups and unmetered ToolSearch discovery
+  // calls each cost a turn (same coupling as the analyzer, src/harness/policy.ts).
+  assert.equal(fake.requests[0].maxTurns, 16);
   assert.equal(fake.requests[0].timeoutMs, 240_000);
+});
+
+test('/new resets the conversation; rewind keeps the head and replays it to a fresh session', async () => {
+  resetDb();
+  const id = seedThread({ last_activity: '1000.000100' });
+  seedMessage({ thread_id: id, text: 'What is the plan for the audit?' });
+
+  const fake = makeFakeHarness({
+    id: 'chat-reset-fake',
+    script: [
+      { type: 'session', id: 'sess-r1' },
+      { type: 'message', text: 'ANSWER-ONE about the audit.' },
+      { type: 'result', text: '', usage: null },
+    ],
+  });
+  await probe.ensureSafetyProof(fake.provider, {});
+  harness.setActiveHarness(fake.provider);
+
+  await chatTurn(id, 'first question');
+  await chatTurn(id, 'second question');
+
+  // Four rows stored: u,a,u,a. Rewind from the SECOND user message.
+  const history = JSON.parse(
+    (await request({ path: `/api/thread/${id}/chat` })).body,
+  ) as { messages: Array<{ id: number; role: string; text: string }> };
+  assert.equal(history.messages.length, 4);
+  const secondUser = history.messages[2];
+  assert.equal(secondUser.role, 'user');
+
+  const rewind = await request({
+    path: `/api/thread/${id}/chat/reset`,
+    method: 'POST',
+    body: JSON.stringify({ from_id: secondUser.id }),
+  });
+  assert.equal(rewind.status, 200);
+  assert.deepEqual(JSON.parse(rewind.body), { ok: true, removed: 2, kept: 2 });
+
+  // The next turn runs with NO stored session (fresh seed here — no analyzer session
+  // exists) and the kept head replayed ahead of the prompt; the discarded tail is gone.
+  await chatTurn(id, 'third question');
+  const lastReq = fake.requests[fake.requests.length - 1];
+  assert.equal(lastReq.session.mode, 'seed');
+  assert.ok(lastReq.prompt.includes('EARLIER CONVERSATION'), 'kept history must be replayed');
+  assert.ok(lastReq.prompt.includes('first question'));
+  assert.ok(!lastReq.prompt.includes('second question'), 'discarded turns must not leak back');
+
+  // Full /new: everything gone, next turn has no replay block at all.
+  const reset = await request({ path: `/api/thread/${id}/chat/reset`, method: 'POST', body: '{}' });
+  assert.equal(reset.status, 200);
+  assert.equal((JSON.parse(reset.body) as { kept: number }).kept, 0);
+  await chatTurn(id, 'fourth question');
+  const freshReq = fake.requests[fake.requests.length - 1];
+  assert.ok(!freshReq.prompt.includes('EARLIER CONVERSATION'));
+  assert.equal(freshReq.session.mode, 'seed');
 });
 
 test('a harness that cannot fork SEEDS instead of resuming the analyzer session', async () => {

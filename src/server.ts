@@ -10,8 +10,11 @@ import {
   getThreadById,
   getMessagesForThread,
   getAnalysisForThread,
+  getSlackUserNames,
+  mentionedUserIds,
   setThreadStatus,
 } from './db.js';
+import { workspaceLabels } from './config.js';
 import { requestReanalysis } from './analyzer.js';
 import { chatSessionIdFor, registerChatRoutes } from './chat.js';
 import { harnessReadiness, harnessStatus } from './harness/index.js';
@@ -384,6 +387,9 @@ export function startServer(port: number): Promise<void> {
         harness: harnessStatus(),
         server: { startedAt: STARTED_AT, version: APP_VERSION, now: new Date().toISOString() },
         workspaces: listWorkspaceHealth(),
+        // Cosmetic per-slot display names from .env (SLACK_A_LABEL=…) — the UI shows
+        // these instead of the bare A/B letters wherever a workspace is named.
+        labels: workspaceLabels,
       });
     } catch (err) {
       console.error('[server] /api/status failed:', err);
@@ -412,9 +418,16 @@ export function startServer(port: number): Promise<void> {
         res.status(404).json({ error: 'thread not found' });
         return;
       }
+      const messages = getMessagesForThread(id);
+      // Names for everyone mentioned inline anywhere in the thread, so the client can
+      // render "@Ruby Chen" instead of "@U01U78WKD1S". Authors ride along on each
+      // message row already; this map covers the people who were only talked about.
+      const mentioned = new Set<string>();
+      for (const m of messages) for (const uid of mentionedUserIds(m.text)) mentioned.add(uid);
       res.json({
         ...thread,
-        messages: getMessagesForThread(id),
+        messages,
+        names: getSlackUserNames(thread.workspace, mentioned),
         analysis: getAnalysisForThread(id) ?? null,
       });
     } catch (err) {

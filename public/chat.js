@@ -300,6 +300,7 @@
       });
       c.messages = ((data && data.messages) || []).map((m) => ({
         key: 'm' + m.id,
+        id: typeof m.id === 'number' ? m.id : null,
         role: String(m.role || ''),
         text: String(m.text || ''),
         at: m.at || null,
@@ -369,10 +370,27 @@
     }
   }
 
+  /** "↺ restart from here" — only on rows the server knows (they have a db id). */
+  function whoRow(c, m, label) {
+    const who = el('div', 'cwho', label);
+    if (m.id != null) {
+      const r = el('button', 'crewind', '↺');
+      r.title = 'Restart the conversation from this point — this message and everything after are discarded. Claude keeps its knowledge of the thread.';
+      r.addEventListener('click', () => {
+        if (c.streaming) return;
+        if (window.confirm('Restart the conversation from this message? Everything after it is discarded.')) {
+          void resetConversation(c, m.id);
+        }
+      });
+      who.appendChild(r);
+    }
+    return who;
+  }
+
   function messageNode(c, m) {
     if (m.role === 'user') {
       const wrap = el('div', 'cmsg user');
-      wrap.appendChild(el('div', 'cwho', 'you'));
+      wrap.appendChild(whoRow(c, m, 'you'));
       const b = el('div', 'cbubble');
       renderPlain(b, m.text);
       wrap.appendChild(b);
@@ -380,7 +398,7 @@
     }
     if (m.role === 'assistant') {
       const wrap = el('div', 'cmsg assistant');
-      wrap.appendChild(el('div', 'cwho', 'claude'));
+      wrap.appendChild(whoRow(c, m, 'claude'));
       if (m.text) {
         const b = el('div', 'cbubble');
         renderRich(b, m.text);
@@ -440,6 +458,47 @@
    * engine — the goal is "readable and provably inert", so fences become <pre> with
    * textContent and everything else is plain text with linkified URLs.
    */
+  /*
+   * Markdown-lite → DOM. The model writes standard markdown (bold, bullets, headings,
+   * inline code); rendering it as raw asterisks made long answers unreadable. Still no
+   * innerHTML anywhere — every branch builds real nodes from untrusted text.
+   */
+  function renderInline(host, text) {
+    const src = String(text == null ? '' : text);
+    const re = /`([^`\n]+)`|\*\*([^*\n]+)\*\*|\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|\*([^*\n]+)\*|_([^_\n]+)_/g;
+    let last = 0;
+    let m;
+    while ((m = re.exec(src)) !== null) {
+      // _emphasis_ only on word boundaries — protects snake_case identifiers.
+      if (m[6] !== undefined) {
+        const before = src.charAt(m.index - 1);
+        const after = src.charAt(m.index + m[0].length);
+        if (/\w/.test(before) || /\w/.test(after)) {
+          re.lastIndex = m.index + 1;
+          continue;
+        }
+      }
+      if (m.index > last) linkify(host, src.slice(last, m.index));
+      last = m.index + m[0].length;
+      if (m[1] !== undefined) host.appendChild(el('code', null, m[1]));
+      else if (m[2] !== undefined) {
+        const b = el('strong');
+        renderInline(b, m[2]);
+        host.appendChild(b);
+      } else if (m[3] !== undefined) {
+        const safe = httpUrlOrNull(m[4]);
+        if (safe) host.appendChild(link(safe, m[3]));
+        else linkify(host, m[0]);
+      } else {
+        const emText = m[5] !== undefined ? m[5] : m[6];
+        const e = el('em');
+        renderInline(e, emText);
+        host.appendChild(e);
+      }
+    }
+    if (last < src.length) linkify(host, src.slice(last));
+  }
+
   function renderRich(host, text) {
     const lines = String(text == null ? '' : text).split('\n');
     let i = 0;
@@ -447,7 +506,10 @@
     const flush = () => {
       if (para.length === 0) return;
       const p = el('p');
-      renderPlain(p, para.join('\n'));
+      para.forEach((line, k) => {
+        if (k > 0) p.appendChild(document.createElement('br'));
+        renderInline(p, line);
+      });
       host.appendChild(p);
       para = [];
     };
@@ -463,12 +525,58 @@
         i = j < lines.length ? j + 1 : j;
         continue;
       }
-      if (lines[i].trim() === '') {
+      const line = lines[i];
+      if (line.trim() === '') {
         flush();
         i++;
         continue;
       }
-      para.push(lines[i]);
+      // Bullets and numbered lists — consume the whole run into one list element.
+      const bullet = /^\s{0,3}[-*•]\s+(.*)$/.exec(line);
+      const numbered = /^\s{0,3}(\d{1,3})[.)]\s+(.*)$/.exec(line);
+      if (bullet || numbered) {
+        flush();
+        const listEl = el(bullet ? 'ul' : 'ol');
+        while (i < lines.length) {
+          const b = /^\s{0,3}[-*•]\s+(.*)$/.exec(lines[i]);
+          const n = /^\s{0,3}\d{1,3}[.)]\s+(.*)$/.exec(lines[i]);
+          const item = bullet ? b : n;
+          if (!item) break;
+          const li = el('li');
+          renderInline(li, item[1]);
+          listEl.appendChild(li);
+          i++;
+        }
+        host.appendChild(listEl);
+        continue;
+      }
+      const heading = /^\s{0,3}#{1,6}\s+(.*)$/.exec(line);
+      if (heading) {
+        flush();
+        const h = el('p', 'mdh');
+        const b = el('strong');
+        renderInline(b, heading[1]);
+        h.appendChild(b);
+        host.appendChild(h);
+        i++;
+        continue;
+      }
+      const quote = /^\s{0,3}>\s?(.*)$/.exec(line);
+      if (quote) {
+        flush();
+        const q = el('div', 'mdq');
+        while (i < lines.length) {
+          const qq = /^\s{0,3}>\s?(.*)$/.exec(lines[i]);
+          if (!qq) break;
+          const ln = el('div');
+          renderInline(ln, qq[1]);
+          q.appendChild(ln);
+          i++;
+        }
+        host.appendChild(q);
+        continue;
+      }
+      para.push(line);
       i++;
     }
     flush();
@@ -488,14 +596,18 @@
   function paintDraft(c, d) {
     const card = d.node;
     if (!card) return;
-    const label = (c.destination && c.destination.label) || destLabel(c, itemById(c.id));
+    const it = itemById(c.id);
+    // Email is read-only end to end: there is no send path to offer, so the card says
+    // where the draft goes instead of pretending a Send button exists.
+    const isEmail = !!(it && it.source === 'gmail');
+    const label = (c.destination && c.destination.label) || destLabel(c, it);
     card.className = 'draftcard' + (d.state === 'sent' ? ' done' : '');
     card.replaceChildren();
 
     const head = el('div', 'dhead');
     head.appendChild(document.createTextNode('draft reply → '));
-    head.appendChild(el('b', null, label));
-    head.appendChild(document.createTextNode(' · as you'));
+    head.appendChild(el('b', null, isEmail ? 'copy into Gmail' : label));
+    if (!isEmail) head.appendChild(document.createTextNode(' · as you'));
     card.appendChild(head);
 
     if (d.state === 'sent') {
@@ -521,16 +633,20 @@
       if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         e.stopPropagation();
-        void sendDraft(c, d);
+        if (!isEmail) void sendDraft(c, d);
       }
     });
     card.appendChild(ta);
 
     const row = el('div', 'drow');
-    const send = el('button', 'dsend', d.state === 'sending' ? 'Posting…' : 'Send to ' + label);
-    send.disabled = d.state === 'sending';
-    send.addEventListener('click', () => void sendDraft(c, d));
-    row.appendChild(send);
+    if (!isEmail) {
+      const send = el('button', 'dsend', d.state === 'sending' ? 'Posting…' : 'Send to ' + label);
+      send.disabled = d.state === 'sending';
+      send.addEventListener('click', () => void sendDraft(c, d));
+      row.appendChild(send);
+    } else if (it && httpUrlOrNull(it.permalink)) {
+      row.appendChild(link(it.permalink, 'Open in Gmail'));
+    }
 
     const copy = el('button', 'dbtn', 'Copy');
     copy.addEventListener('click', () => {
@@ -804,7 +920,43 @@
     if (text === '') return;
     panel.ta.value = '';
     c.composer = '';
+    // "/new": fresh conversation, same thread knowledge (the next turn re-briefs from
+    // the transcript and triage). Nothing goes to the model for the command itself.
+    if (text === '/new' || text === '/reset') {
+      void resetConversation(c, null);
+      return;
+    }
     void runTurn(c, text, false);
+  }
+
+  async function resetConversation(c, fromId) {
+    try {
+      await apiJson('/api/thread/' + c.id + '/chat/reset', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(fromId != null ? { from_id: fromId } : {}),
+      });
+      c.messages = [];
+      c.sessionId = null;
+      await loadHistory(c);
+      appendMessage(c, {
+        key: 'sys' + Date.now(),
+        role: 'system',
+        text: fromId != null
+          ? 'Conversation restarted from here — everything after was discarded. Claude still knows the thread.'
+          : 'Fresh conversation — Claude still knows the thread.',
+        at: null,
+        drafts: [],
+      });
+    } catch (err) {
+      appendMessage(c, {
+        key: 'err' + Date.now(),
+        role: 'error',
+        text: "Couldn't restart the conversation: " + String((err && err.message) || err),
+        at: null,
+        drafts: [],
+      });
+    }
   }
 
   function stopTurn(c) {
@@ -857,24 +1009,70 @@
     }
   }
 
+  /*
+   * One quiet, collapsible row per turn instead of a box per call ("all those tool
+   * call boxes seem annoying"). Discovery calls (ToolSearch) are plumbing and never
+   * shown; real lookups aggregate into per-service counts, expandable on click.
+   */
+  function toolLabel(name) {
+    const m = /^mcp__(.+?)__(.+)$/.exec(name);
+    if (!m) return name || 'lookup';
+    return m[1].replace(/^claude_ai_/, '').replace(/_/g, ' ');
+  }
+
   function toolRow(c, ev) {
     if (!panel || panel.threadId !== c.id) return;
-    if (ev.phase === 'start') {
-      const r = el('div', 'ctool', '⚙ ' + ev.name + ' …');
-      r.dataset.tool = ev.name;
-      panel.body.insertBefore(r, panel.streamNode || null);
-      scrollDown(false);
-      return;
+    if (ev.name === 'ToolSearch') return;
+    let g = panel.toolGroup;
+    if (!g) {
+      g = {
+        node: el('div', 'ctoolgroup'),
+        head: el('button', 'ctoolhead'),
+        list: el('div', 'ctoollist'),
+        calls: [], open: false, inflight: 0,
+      };
+      g.list.style.display = 'none';
+      g.head.addEventListener('click', () => {
+        g.open = !g.open;
+        g.list.style.display = g.open ? '' : 'none';
+        paintToolGroup(g);
+      });
+      g.node.appendChild(g.head);
+      g.node.appendChild(g.list);
+      panel.body.insertBefore(g.node, panel.streamNode || null);
+      panel.toolGroup = g;
     }
-    const rows = panel.body.querySelectorAll('.ctool');
-    for (let i = rows.length - 1; i >= 0; i--) {
-      const r = rows[i];
-      if (r.dataset.done !== '1' && (r.dataset.tool === ev.name || ev.name === 'tool')) {
-        r.dataset.done = '1';
-        r.className = 'ctool ' + (ev.ok === false ? 'bad' : 'ok');
-        r.textContent = '⚙ ' + r.dataset.tool + (ev.ok === false ? ' ✕' : ' ✓');
-        return;
+    if (ev.phase === 'start') {
+      g.calls.push({ name: ev.name, done: false, ok: null });
+      g.inflight += 1;
+    } else {
+      const call = g.calls.find((x) => !x.done && x.name === ev.name) || g.calls.find((x) => !x.done);
+      if (call) {
+        call.done = true;
+        call.ok = ev.ok !== false;
+        g.inflight = Math.max(0, g.inflight - 1);
       }
+    }
+    paintToolGroup(g);
+    scrollDown(false);
+  }
+
+  function paintToolGroup(g) {
+    const byService = new Map();
+    let failed = 0;
+    for (const call of g.calls) {
+      const s = toolLabel(call.name);
+      byService.set(s, (byService.get(s) || 0) + 1);
+      if (call.done && call.ok === false) failed += 1;
+    }
+    const parts = [...byService.entries()].map(([s, n]) => s + (n > 1 ? ' ×' + n : ''));
+    let label = (g.inflight > 0 ? '⚙ Checking ' : '⚙ Checked ') + parts.join(' · ') + (g.inflight > 0 ? '…' : '');
+    if (failed > 0) label += ' · ' + failed + " couldn't be read";
+    g.head.textContent = label + (g.open ? '  ▾' : '  ▸');
+    g.list.replaceChildren();
+    for (const call of g.calls) {
+      g.list.appendChild(el('div', 'ctool ' + (call.done ? (call.ok ? 'ok' : 'bad') : ''),
+        (call.done ? (call.ok ? '✓ ' : '✕ ') : '… ') + call.name));
     }
   }
 
@@ -887,6 +1085,7 @@
       appendMessage(c, { key: 'u' + Date.now(), role: 'user', text: text, at: null, drafts: [] });
     }
     c.streamRaw = '';
+    if (panel && panel.threadId === c.id) panel.toolGroup = null; // fresh lookup group per turn
     startStreamNode(c);
     syncHead();
 

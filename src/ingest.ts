@@ -15,6 +15,9 @@ import {
   ensureWatchStart,
   upsertSlackUser,
   listUserIdsNeedingProfile,
+  listRecentMentionTexts,
+  mentionedUserIds,
+  getSlackUser,
   type SlackUserProfile,
   type ThreadRow,
 } from './db.js';
@@ -224,15 +227,35 @@ export async function syncUserProfiles(rt: WorkspaceRuntime): Promise<number> {
   let filled = 0;
   try {
     let userIds: string[] = [];
+    const staleBefore = new Date(Date.now() - PROFILE_STALE_MS).toISOString();
     try {
-      userIds = listUserIdsNeedingProfile(
-        rt.key,
-        new Date(Date.now() - PROFILE_STALE_MS).toISOString(),
-        PROFILE_SWEEP_MAX_USERS,
-      );
+      userIds = listUserIdsNeedingProfile(rt.key, staleBefore, PROFILE_SWEEP_MAX_USERS);
     } catch (err) {
       console.warn(`[${rt.key}] could not list people needing a profile:`, (err as Error).message);
       return 0;
+    }
+
+    // People who are only ever *talked about* — "ask <@U123> when they're back" — never
+    // author a message, so the query above cannot see them, and without a profile the
+    // feed shows a raw id where a name should be. Mine recent mention-bearing texts for
+    // ids we have no (fresh) profile for, inside the same per-sweep cap and pacing.
+    try {
+      if (userIds.length < PROFILE_SWEEP_MAX_USERS) {
+        const have = new Set(userIds);
+        for (const text of listRecentMentionTexts(rt.key, 300)) {
+          for (const id of mentionedUserIds(text)) {
+            if (have.has(id)) continue;
+            const u = getSlackUser(rt.key, id);
+            if (u && u.updated_at !== null && u.updated_at >= staleBefore) continue;
+            have.add(id);
+            userIds.push(id);
+            if (userIds.length >= PROFILE_SWEEP_MAX_USERS) break;
+          }
+          if (userIds.length >= PROFILE_SWEEP_MAX_USERS) break;
+        }
+      }
+    } catch (err) {
+      console.warn(`[${rt.key}] could not mine mentions for profiles:`, (err as Error).message);
     }
 
     for (let i = 0; i < userIds.length; i++) {

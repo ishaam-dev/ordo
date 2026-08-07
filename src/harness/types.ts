@@ -191,8 +191,11 @@ export interface ReadOnlyAccess {
 export type ToolAccess = { readonly mode: 'none'; readonly gate: ToolGate } | ReadOnlyAccess;
 
 export interface HarnessRequest {
-  /** 'analysis' (background, untrusted input, JSON out) or 'chat' (user-driven, streamed). */
-  readonly purpose: 'analysis' | 'chat';
+  /**
+   * 'analysis' (background, untrusted input, JSON out), 'chat' (user-driven, streamed),
+   * or 'email' (background mail poll+triage; allowlist tool gate, JSON out).
+   */
+  readonly purpose: 'analysis' | 'chat' | 'email';
   readonly systemPrompt: string;
   readonly prompt: string;
   readonly session: SessionPlan;
@@ -205,8 +208,14 @@ export interface HarnessRequest {
   readonly cwd: string;
   /** From COPILOT_HARNESS_MODEL, resolved in config.ts. Providers may ignore it. */
   readonly model?: string;
-  /** Set only when purpose==='analysis'. Adapters with structuredOutput may use it. */
+  /** Set for 'analysis' and 'email' runs. Adapters with structuredOutput may use it. */
   readonly jsonSchema?: Record<string, unknown>;
+  /**
+   * When true, an adapter that can attaches each tool call's raw result to its
+   * phase-'end' tool event (see HarnessEvent). Off by default: chat and analysis have no
+   * business carrying tool payloads through core.
+   */
+  readonly wantToolResults?: boolean;
   /** Optional per-run spend ceiling, for harnesses that can enforce one. */
   readonly maxBudgetUsd?: number;
 }
@@ -225,6 +234,18 @@ export type HarnessEvent =
       readonly name: string;
       readonly phase: 'start' | 'end';
       readonly ok?: boolean;
+      /**
+       * The tool's own result, verbatim, on phase 'end' — set only by adapters that can
+       * surface it, and only when core asked for it (HarnessRequest.wantToolResults).
+       * This exists so the email poller can read Gmail's actual JSON instead of trusting
+       * a model's transcription of it (a model in the copy path eventually drops a row —
+       * docs/email-ingest.md §1.3/E6). SECURITY: this is attacker-controlled bytes from
+       * whatever the tool read. Consumers must treat it as data — parse defensively,
+       * never render, never execute, never feed to another prompt outside an untrusted
+       * block. Truncated to a fixed cap by the adapter; `resultTruncated` says when.
+       */
+      readonly result?: string;
+      readonly resultTruncated?: boolean;
     }
   | {
       readonly type: 'result';

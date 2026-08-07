@@ -4,6 +4,7 @@ import { selectHarness } from './harness/index.js';
 import { startServer } from './server.js';
 import { startIngest } from './ingest.js';
 import { startAnalyzer, preflightAnalyzerHarness } from './analyzer.js';
+import { startEmailIngest } from './email.js';
 
 async function main(): Promise<void> {
   console.log(`[main] db: ${DB_PATH}`);
@@ -41,6 +42,7 @@ async function main(): Promise<void> {
 
   await preflightAnalyzerHarness(); // never throws: reports, it does not crash
   startAnalyzer(); // no-op with ANALYZER_DISABLED=1
+  startEmailIngest(); // no-op unless COPILOT_EMAIL=1
 }
 
 main().catch((err) => {

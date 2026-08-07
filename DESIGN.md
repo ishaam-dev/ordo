@@ -263,7 +263,8 @@ the thread stale and re-queues it.
 - **Read-only, and not the analyzer's call to make.** Thread text is attacker-controlled input,
   so the run asks core for its access (`resolveToolAccess(provider, 'analysis')`, §4) and passes
   it to the provider, which wires it into its own enforcement points. For `claude-code` that is
-  still three ways — `tools: []` + `disallowedTools`, a `canUseTool` gate, and a `PreToolUse`
+  still three ways — `tools: ['ToolSearch']` (the read-only discovery stub that keeps MCP
+  schemas deferred out of context) + `disallowedTools`, a `canUseTool` gate, and a `PreToolUse`
   hook that fires even for tools a user setting auto-allows — but all three now read the one
   core gate: `mcp__*` names only, no mutation words, ≤5 calls per run. A harness that has not
   proved it is safe gets no tools at all instead.
@@ -307,8 +308,8 @@ Three routes, mounted under `/api` so they inherit the Host allowlist and the pe
 - **Sending is deliberately not a model tool**, and there is no draft id. The bytes posted to
   `chat.postMessage` come from the request body of a separate endpoint — i.e. from the
   textarea the user just looked at and could edit — fired by a button labelled with the
-  destination. Chat sessions run with no built-in tools at all, so the model cannot reach
-  that endpoint. DM threads post with **no** `thread_ts` (sending `thread_ts = channel_id`
+  destination. Chat sessions run with no built-in tools beyond the read-only tool-discovery
+  stub, so the model cannot reach that endpoint. DM threads post with **no** `thread_ts` (sending `thread_ts = channel_id`
   would create a bogus thread). `COPILOT_REPLY_DRYRUN=1` exercises the whole path without
   touching Slack.
 - Same core-decided read-only access as the analyzer (`purpose: 'chat'` — 8 tool calls/turn

@@ -26,6 +26,7 @@
     --ws-fg:#0d1117;
     --ws-0:#39c5cf; --ws-1:#bc8cff; --ws-2:#e3b341;
     --ws-3:#7ee787; --ws-4:#ffa198; --ws-5:#79c0ff;
+    --ws-email:#f0883e; /* reserved for the ✉ badge, outside the rotation */
     /* translucent washes (composited over --surface or --bg) + matching hairlines */
     --wash-p0:rgba(248,81,73,.06);      /* the P0 card tint, deliberately faint */
     --wash-p0-2:rgba(248,81,73,.10);    /* error strip, setup banner, chat error */
@@ -57,6 +58,7 @@
       --ws-fg:#ffffff;
       --ws-0:#0f7285; --ws-1:#6b35c4; --ws-2:#8a6100;
       --ws-3:#1d7a41; --ws-4:#b03a37; --ws-5:#1c5fb0;
+      --ws-email:#a34d0b;
       /* washes are mixed from a brighter version of each hue: an alpha of the
          dark text colour turns every tinted band into khaki mud on white */
       --wash-p0:rgba(214,45,45,.07); --wash-p0-2:rgba(224,70,70,.12);
@@ -170,10 +172,16 @@
   .hocard .cmd{white-space:pre-wrap;word-break:break-all}
   .chat .hocard{margin:0;border:0;border-top:1px solid var(--border);border-radius:0;
     background:var(--surface);padding:9px 12px}
-  .chat .hotoggle{display:flex;align-items:center;gap:6px;width:100%;background:none;
-    border:0;padding:0;color:var(--text-2);font-family:inherit;font-size:11.5px;
-    cursor:pointer;text-align:left}
+  .chat .hotoggle,.hocard .hotoggle{display:flex;align-items:center;gap:6px;width:100%;
+    background:none;border:0;padding:0;color:var(--text-2);font-family:inherit;
+    font-size:11.5px;cursor:pointer;text-align:left}
   .chat .hotoggle:hover{color:var(--text)}
+  /* The thread-pane card reuses the strip's toggle but keeps its title weight, so the
+     closed card reads as the same header it always had — just with a chevron. */
+  .hocard .hotoggle{color:var(--text);font-size:12.5px;font-weight:700}
+  .hocard .hotoggle span:first-child{color:var(--text-2);font-weight:400}
+  .hocard .hotoggle:hover{color:var(--text)}
+  .hocard .hosub{margin-top:6px}
 
   /* ================= 3-pane layout ================= */
   .main{flex:1;display:grid;grid-template-columns:380px minmax(480px,1fr) 400px;min-height:0;position:relative}
@@ -197,6 +205,7 @@
   .feedhead{flex:none;display:flex;align-items:center;gap:8px;padding:6px 10px;
     border-bottom:1px solid var(--border);background:var(--bg)}
   .feedhead .sortlab{font-size:11px;color:var(--text-3);user-select:none;flex:none}
+  .feedhead .srcseg{margin-left:auto}
   .seg{display:flex;border:1px solid var(--border);border-radius:6px;overflow:hidden}
   .segbtn{padding:3px 9px;font-family:inherit;font-size:12px;line-height:1.5;color:var(--text-2);
     background:none;border:none;border-left:1px solid var(--border);cursor:pointer;white-space:nowrap}
@@ -239,6 +248,19 @@
   .stale-mark{color:var(--warn);font-size:12px;flex:none;cursor:help}
   .ws{font-family:var(--mono);font-size:9px;font-weight:700;color:var(--ws-fg);border-radius:3px;
     width:14px;height:14px;display:inline-flex;align-items:center;justify-content:center;flex:none}
+  /* With a .env label ("AI Fund", "DL") the badge grows into a little chip. */
+  .ws.named{width:auto;padding:0 5px;letter-spacing:.2px;white-space:nowrap}
+  /* Email badge: fixed reserved colour, never drawn from the workspace rotation. */
+  .ws.email{background:var(--ws-email);font-size:10px}
+  /* The source filter's Email segment carries a miniature of the same badge, so the
+     control and the cards speak one visual language. */
+  .segbtn .ws.mini{width:13px;height:13px;font-size:8.5px;border-radius:3px;
+    margin-right:5px;vertical-align:-2px}
+  .kind.cc{font-size:9.5px;letter-spacing:.4px}
+  .sender-domain{color:var(--text-3);font-size:11px;flex:none}
+  .quoted-toggle{background:none;border:0;padding:0;color:var(--text-3);font-size:11.5px;
+    cursor:pointer;font-family:inherit;text-decoration:underline dotted}
+  .quoted-text{color:var(--text-3);border-left:2px solid var(--border);padding-left:8px;margin-top:4px}
   .chan{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-2);max-width:19ch;flex:none}
   .kind{color:var(--text-3);flex:none}
   .ctime{margin-left:auto;font-family:var(--mono);font-size:10.5px;flex:none;white-space:nowrap}
@@ -450,6 +472,14 @@
             title="Newest activity first, ignoring urgency. One flat list.">Newest</button>
           <button class="segbtn" data-sort="oldest" aria-pressed="false"
             title="Oldest activity first, ignoring urgency. One flat list.">Oldest</button>
+        </div>
+        <div class="seg srcseg" id="srcseg" role="group" aria-label="Filter by source">
+          <button class="segbtn active" data-source="all" aria-pressed="true"
+            title="Slack and email together — one ranked list.">All</button>
+          <button class="segbtn" data-source="slack" aria-pressed="false"
+            title="Slack threads only.">Slack</button>
+          <button class="segbtn" data-source="gmail" aria-pressed="false"
+            title="Email only."><span class="ws email mini">✉</span>Email</button>
         </div>
       </div>
       <div class="feedlist" id="feedlist"></div>
@@ -763,6 +793,46 @@ function renderMrkdwn(text, names) {
   return frag;
 }
 
+/**
+ * Email bodies → DOM. NOT the mrkdwn renderer: email has different syntax and different
+ * semantics (`*asterisks*` in an email are asterisks), and email text is written by
+ * anyone on the internet — so this builds text nodes only, no links, no innerHTML.
+ * The quoted-reply trailer (`> …` chains and everything from the first
+ * "On <date>, <person> wrote:" line) collapses behind a toggle — otherwise every email
+ * is 90% the previous email.
+ */
+function renderPlainEmail(text) {
+  const frag = document.createDocumentFragment();
+  const src = String(text ?? '');
+  if (!src.trim()) {
+    frag.appendChild(el('span', 'empty-msg', '(no text)'));
+    return frag;
+  }
+  const lines = src.split('\n');
+  let cut = lines.length;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^\s*>/.test(lines[i]) || /^\s*On .{2,160} wrote:\s*$/.test(lines[i])) { cut = i; break; }
+  }
+  for (const line of lines.slice(0, cut)) {
+    frag.appendChild(el('div', 'mline', line === '' ? ' ' : line));
+  }
+  const quoted = lines.slice(cut).filter((l) => l.trim() !== '');
+  if (quoted.length) {
+    const btn = el('button', 'quoted-toggle', 'show quoted text (' + quoted.length + ' lines)');
+    const box = el('div', 'quoted-text');
+    box.style.display = 'none';
+    quoted.forEach((line) => box.appendChild(el('div', 'mline', line)));
+    btn.addEventListener('click', () => {
+      const open = box.style.display !== 'none';
+      box.style.display = open ? 'none' : '';
+      btn.textContent = (open ? 'show' : 'hide') + ' quoted text (' + quoted.length + ' lines)';
+    });
+    frag.appendChild(btn);
+    frag.appendChild(box);
+  }
+  return frag;
+}
+
 /** Slack mrkdwn → single-line plain text (feed snippets). Returned as a string,
  *  always assigned with textContent. */
 function plainText(text, names) {
@@ -791,14 +861,28 @@ function plainText(text, names) {
 // Tokens, not hexes: the badge fills are re-tuned for light mode in the
 // stylesheet (deep + white letter) instead of pale + dark letter on white.
 const WS_COLORS = ['var(--ws-0)', 'var(--ws-1)', 'var(--ws-2)', 'var(--ws-3)', 'var(--ws-4)', 'var(--ws-5)'];
+/** What to call a workspace: the .env label if set, else Slack's team name, else the slot key. */
+function wsName(key, teamName) {
+  return (state.labels && state.labels[key]) || teamName || key;
+}
 function wsBadge(item) {
+  // Email gets a glyph in a fixed reserved colour, never a letter from the workspace
+  // rotation — a "G" would read as a third Slack workspace (docs/email-ingest.md §6).
+  if (item.source === 'gmail' || item.workspace === 'G') {
+    const b = el('span', 'ws email', '✉');
+    b.title = item.team_name || 'Email';
+    return b;
+  }
   const key = String(item.workspace ?? '?');
-  const b = el('span', 'ws', key.charAt(0).toUpperCase() || '?');
+  const label = (state.labels && state.labels[key]) || '';
+  const b = el('span', 'ws' + (label ? ' named' : ''), label || key.charAt(0).toUpperCase() || '?');
   b.style.background = WS_COLORS[Math.abs(key.charCodeAt(0) || 0) % WS_COLORS.length];
   b.title = item.team_name || ('workspace ' + key);
   return b;
 }
 function channelLabel(item) {
+  // For email the subject is the closest thing to a channel: it names the conversation.
+  if (item.source === 'gmail') return item.subject || '(no subject)';
   const name = item.channel_name;
   if (item.kind === 'mention') return '#' + (name || 'channel');
   return name ? 'DM · ' + name : 'DM';
@@ -826,6 +910,16 @@ function loadSortMode() {
   } catch (_) { return 'priority'; }
 }
 
+/* Source filter — same shape as the sort control: display-only, remembered, safe. */
+const SOURCE_KEY = 'copilot-feed-source';
+const SOURCE_MODES = ['all', 'slack', 'gmail'];
+function loadSourceFilter() {
+  try {
+    const v = localStorage.getItem(SOURCE_KEY);
+    return SOURCE_MODES.indexOf(v) >= 0 ? v : 'all';
+  } catch (_) { return 'all'; }
+}
+
 const state = {
   items: [],
   loaded: false,
@@ -833,6 +927,7 @@ const state = {
   lastOk: null,
   tab: 'inbox',
   sort: loadSortMode(),    // priority | newest | oldest  (display order only)
+  sourceFilter: loadSourceFilter(), // all | slack | gmail  (display filter only)
   cursor: null,
   focusPane: 'feed',       // feed | thread | chat
   chatOpen: false,
@@ -845,6 +940,7 @@ const state = {
   chatSeed: '',
   chatNote: '',
   status: null,            // last /api/status payload (analyzer + server + workspaces)
+  labels: {},              // workspace key -> display label from .env (SLACK_A_LABEL=…)
   statusError: null,
   reanalyze: new Map(),    // thread id -> 'busy' | 'queued' (transient UI state)
   handoff: new Map(),      // thread id -> "Continue in Claude Code" state (see loadHandoff)
@@ -858,6 +954,7 @@ const bannerEl = document.getElementById('setupbanner');
 const statusesEl = document.getElementById('statuses');
 const overlayEl = document.getElementById('overlay');
 const sortSegEl = document.getElementById('sortseg');
+const srcSegEl = document.getElementById('srcseg');
 const cardEls = new Map();
 
 /* ------------------------- analyzer health helpers ------------------------ */
@@ -933,7 +1030,9 @@ function staleCount(it) {
  *  `grouped` tells renderFeed which of the two shapes it got. */
 function visibleItems() {
   const list = state.items.filter((i) =>
-    state.tab === 'inbox' ? i.status !== 'done' : state.tab === 'done' ? i.status === 'done' : true);
+    (state.tab === 'inbox' ? i.status !== 'done' : state.tab === 'done' ? i.status === 'done' : true) &&
+    (state.sourceFilter === 'all' ||
+      (state.sourceFilter === 'gmail' ? i.source === 'gmail' : i.source !== 'gmail')));
   const act = (i) => parseFloat(i.last_activity || 0) || 0;
   const byAct = (a, b) => act(b) - act(a);
 
@@ -942,8 +1041,11 @@ function visibleItems() {
     return { pending: [], ranked: flat, flat: flat, grouped: false };
   }
 
-  const pending = list.filter((i) => !urgencyOf(i) && i.status !== 'done').sort(byAct);
-  const ranked = list.filter((i) => !(!urgencyOf(i) && i.status !== 'done')).sort((a, b) => {
+  // Unrated EMAIL is a steady state (triaged in batches, daily cap), not a pending one —
+  // it must never fill the "Analyzing" group, so it sorts into the ranked list's bottom.
+  const isPending = (i) => !urgencyOf(i) && i.status !== 'done' && i.source !== 'gmail';
+  const pending = list.filter(isPending).sort(byAct);
+  const ranked = list.filter((i) => !isPending(i)).sort((a, b) => {
     const ra = RANK[a.urgency] !== undefined ? RANK[a.urgency] : 4;
     const rb = RANK[b.urgency] !== undefined ? RANK[b.urgency] : 4;
     return ra !== rb ? ra - rb : byAct(a, b);
@@ -967,6 +1069,25 @@ function paintSortControl() {
     b.classList.toggle('active', on);
     b.setAttribute('aria-pressed', on ? 'true' : 'false');
   });
+}
+
+function paintSourceControl() {
+  if (!srcSegEl) return;
+  srcSegEl.querySelectorAll('.segbtn').forEach((b) => {
+    const on = b.dataset.source === state.sourceFilter;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+}
+
+function setSourceFilter(mode) {
+  if (SOURCE_MODES.indexOf(mode) < 0 || state.sourceFilter === mode) return;
+  state.sourceFilter = mode;
+  try { localStorage.setItem(SOURCE_KEY, mode); } catch (_) { /* preference just won't stick */ }
+  paintSourceControl();
+  renderFeed();
+  ensureCursor();        // the cursored thread may have been filtered out entirely
+  scrollCursorIntoView();
 }
 
 /** Change the display order. The cursor is keyed by thread id (never by index),
@@ -1036,6 +1157,7 @@ async function loadStatus() {
   try {
     const s = await api('/api/status');
     state.status = s && typeof s === 'object' ? s : null;
+    state.labels = (state.status && state.status.labels) || {};
     state.statusError = null;
   } catch (err) {
     // Leave the last known status on screen rather than flickering to "fine".
@@ -1173,6 +1295,7 @@ function handoffState(id) {
       busy: null,        // 'chat' | 'analysis' while a launch is in flight
       shown: {},         // target -> true once its command row is revealed
       note: null,        // { text, tone } under the buttons
+      open: false,       // the card starts as a one-line header; clicking expands it
     };
     state.handoff.set(id, h);
   }
@@ -1184,7 +1307,7 @@ function handoffSig(id) {
   const h = state.handoff.get(id);
   if (!h) return null;
   return [h.loaded, h.canLaunch, h.chat && h.chat.sessionId, h.analysis && h.analysis.sessionId,
-    h.busy, !!h.shown.chat, !!h.shown.analysis,
+    h.busy, h.open, !!h.shown.chat, !!h.shown.analysis,
     h.note && h.note.target, h.note && h.note.text].join('|');
 }
 
@@ -1413,8 +1536,8 @@ function wsHealth(h) {
 }
 
 function renderStatuses() {
-  const ws = new Map();
-  state.items.forEach((i) => { if (!ws.has(i.workspace)) ws.set(i.workspace, i.team_name || i.workspace); });
+  const ws = new Map(); // key -> raw team name (labels are applied at render, not here)
+  state.items.forEach((i) => { if (!ws.has(i.workspace)) ws.set(i.workspace, i.team_name || null); });
   /* The feed only says which workspaces have sent us something; /api/status is the only
      honest source for "is Slack actually connected?". Prefer it — it also lists a
      configured workspace that has produced no messages yet — and fall back to the
@@ -1425,23 +1548,29 @@ function renderStatuses() {
     reported.forEach((w) => {
       if (!w || !w.key) return;
       health.set(w.key, w);
-      ws.set(w.key, w.teamName || ws.get(w.key) || w.key);
+      ws.set(w.key, w.teamName || ws.get(w.key) || null);
     });
   }
   const pending = state.items.filter((i) => !urgencyOf(i) && i.status !== 'done').length;
   statusesEl.replaceChildren();
   const chip = analyzerChip(pending);
   if (chip) statusesEl.appendChild(chip);
-  ws.forEach((name, key) => {
+  ws.forEach((teamName, key) => {
     const s = el('span', 'st');
     const h = health.get(key);
     const hs = h ? wsHealth(h) : null;
     // No dot at all when the server has not reported yet: an uncoloured dot would read as
     // a bug, and a green one would be a claim we cannot back up.
     if (hs && hs.cls) s.appendChild(el('i', hs.cls));
-    s.appendChild(wsBadge({ workspace: key, team_name: name }));
-    s.appendChild(el('span', null, name));
-    s.title = name + (hs ? ' — ' + hs.text : '');
+    s.appendChild(wsBadge({ workspace: key, team_name: teamName }));
+    // The labelled badge already says "AI Fund"; repeat text only when it adds
+    // information (the label is an abbreviation, or there is no label at all).
+    const label = (state.labels && state.labels[key]) || '';
+    const text = label
+      ? (teamName && teamName.toLowerCase() !== label.toLowerCase() ? teamName : '')
+      : (teamName || key);
+    if (text) s.appendChild(el('span', null, text));
+    s.title = wsName(key, teamName) + (hs ? ' — ' + hs.text : '');
     statusesEl.appendChild(s);
   });
   const ok = !state.feedError;
@@ -1581,6 +1710,12 @@ function paintCard(c, it, u, stale) {
     const chip = el('span', 'chip c' + u.charAt(1), u);
     chip.title = 'urgency ' + u;
     r1.appendChild(chip);
+  } else if (it.source === 'gmail') {
+    // Unrated email is a steady state, not a pending one — email is triaged in
+    // batches with a daily cap, so this stays calm: no spinner, no shimmer.
+    const chip = el('span', 'chip pending', '—');
+    chip.title = 'not rated — email is triaged in batches';
+    r1.appendChild(chip);
   } else {
     const chip = el('span', 'chip pending', '…');
     const trouble = analyzerTrouble();
@@ -1595,7 +1730,10 @@ function paintCard(c, it, u, stale) {
   }
   r1.appendChild(wsBadge(it));
   r1.appendChild(el('span', 'chan', channelLabel(it)));
-  if (it.kind === 'mention') r1.appendChild(el('span', 'kind', '@'));
+  if (it.source === 'gmail') {
+    // Mark only the unusual case: silence when the user is in To:, a faint cc otherwise.
+    if (it.recipient_role && it.recipient_role !== 'to') r1.appendChild(el('span', 'kind cc', 'cc'));
+  } else if (it.kind === 'mention') r1.appendChild(el('span', 'kind', '@'));
   const t = el('span', 'ctime', relTime(it.last_activity));
   t.title = it.last_activity ? new Date(tsMs(it.last_activity)).toLocaleString() : '';
   r1.appendChild(t);
@@ -1609,7 +1747,8 @@ function paintCard(c, it, u, stale) {
   });
   hb.appendChild(done);
   const slack = el('button', 'hbtn', '↗');
-  slack.title = httpUrlOrNull(it.permalink) ? 'open in Slack (s)' : 'no link back to Slack';
+  const dest = it.source === 'gmail' ? 'Gmail' : 'Slack';
+  slack.title = httpUrlOrNull(it.permalink) ? `open in ${dest} (s)` : `no link back to ${dest}`;
   slack.addEventListener('click', (e) => { e.stopPropagation(); openInSlack(it.id); });
   hb.appendChild(slack);
   r1.appendChild(hb);
@@ -1618,13 +1757,23 @@ function paintCard(c, it, u, stale) {
   r2.appendChild(el('span', 'ddone', '✓'));
   const lm = it.last_message;
   r2.appendChild(el('span', 'sender', (lm && lm.author_name) || 'unknown'));
-  r2.appendChild(el('span', 'snippet', plainText(lm && lm.text, null) || '—'));
+  // For email, the sending domain is the honest equivalent of a job title.
+  const senderDomain = it.source === 'gmail' && lm && typeof lm.author_id === 'string' &&
+    lm.author_id.includes('@') ? lm.author_id.split('@').pop() : null;
+  if (senderDomain) r2.appendChild(el('span', 'sender-domain', '· ' + senderDomain));
+  // Email bodies are not Slack mrkdwn — collapse whitespace, never strip "markup".
+  const snippet = it.source === 'gmail'
+    ? String((lm && lm.text) || '').replace(/\s+/g, ' ').trim()
+    : plainText(lm && lm.text, it.names || null);
+  r2.appendChild(el('span', 'snippet', snippet || '—'));
 
   r3.appendChild(el('span', 'spark', '✦'));
   if (it.why) {
     const w = el('span', 'why', it.why);
     w.title = it.why;
     r3.appendChild(w);
+  } else if (it.source === 'gmail') {
+    r3.appendChild(el('span', 'why waiting', 'Not rated yet'));
   } else if (analyzerStalled()) {
     // Never shimmer when nothing is running — that reads as "work in progress".
     const trouble = analyzerTrouble();
@@ -1649,11 +1798,13 @@ function renderFeed() {
   }
   const { pending, ranked, flat, grouped } = visibleItems();
   if (!flat.length) {
-    const names = Array.from(new Set(state.items.map((i) => i.team_name).filter(Boolean)));
+    const names = Array.from(new Set(state.items.map((i) => wsName(i.workspace, i.team_name)).filter(Boolean)));
     const p = el('div', 'placeholder');
     p.innerHTML = state.tab === 'done'
       ? html`<b>Nothing done yet</b>Press <span class="kbd">e</span> on a thread to file it here.`
-      : html`<b>No DMs or mentions yet</b>${names.length ? 'Watching ' + names.join(' + ') + '.' : 'Watching your Slack workspaces.'}<br>New threads land here the moment they arrive.`;
+      : state.sourceFilter === 'gmail'
+        ? html`<b>No email here yet</b>New mail lands after each check — older messages stay in Gmail.`
+        : html`<b>No DMs or mentions yet</b>${names.length ? 'Watching ' + names.join(' + ') + '.' : 'Watching your Slack workspaces.'}<br>New threads land here the moment they arrive.`;
     feedListEl.replaceChildren(p);
     return;
   }
@@ -1739,7 +1890,9 @@ function renderThread() {
   const keepTop = old ? old.scrollTop : 0;
   const hadFocus = old && document.activeElement === old;
 
-  const names = {};
+  // Server-supplied names cover people who are only mentioned; per-message author
+  // names (stored at ingest time) overlay them for everyone who actually spoke.
+  const names = Object.assign({}, (d && d.names) || {});
   if (d) d.messages.forEach((m) => { if (m.author_id && m.author_name) names[m.author_id] = m.author_name; });
 
   threadEl.replaceChildren(threadHeader(it, d), threadScroll(it, d, a, names));
@@ -1755,7 +1908,8 @@ function threadHeader(it, d) {
   const h = el('div', 'thead');
   h.appendChild(wsBadge(it));
   h.appendChild(el('span', 'title', channelLabel(it)));
-  const bits = [it.kind === 'mention' ? 'mention' : 'DM', it.team_name || it.workspace];
+  const kindBit = it.source === 'gmail' ? 'email' : it.kind === 'mention' ? 'mention' : 'DM';
+  const bits = [kindBit, wsName(it.workspace, it.team_name)];
   const n = d ? d.messages.length : it.message_count;
   bits.push(n + (n === 1 ? ' message' : ' messages'));
   if (it.last_activity) bits.push('updated ' + clockTime(it.last_activity));
@@ -1769,10 +1923,12 @@ function threadHeader(it, d) {
   act.appendChild(chat);
 
   const slack = el('button', 'btn');
-  slack.appendChild(document.createTextNode('Open in Slack'));
+  // A button that says Slack and opens Gmail is the kind of small lie that costs trust.
+  const linkDest = it.source === 'gmail' ? 'Gmail' : 'Slack';
+  slack.appendChild(document.createTextNode('Open in ' + linkDest));
   slack.appendChild(el('span', 'key', 's'));
   slack.disabled = !httpUrlOrNull(it.permalink);
-  if (slack.disabled) slack.title = 'this conversation has no link back to Slack';
+  if (slack.disabled) slack.title = 'this conversation has no link back to ' + linkDest;
   slack.addEventListener('click', () => openInSlack(it.id));
   act.appendChild(slack);
 
@@ -1847,11 +2003,15 @@ function threadScroll(it, d, a, names) {
 
     const row = el('div', 'msg' + (same ? '' : ' first'));
     const author = m.author_name || m.author_id || 'unknown';
+    // The Slack mrkdwn renderer must not run on email text (different syntax, and the
+    // sender is anyone on the internet) — email bodies get the plain renderer.
+    const renderBody = (text) =>
+      it.source === 'gmail' ? renderPlainEmail(text) : renderMrkdwn(text, names);
     if (same) {
       row.appendChild(el('div', 'avatar ghost'));
       const b = el('div', 'mbody');
       const txt = el('div', 'mtext');
-      txt.appendChild(renderMrkdwn(m.text, names));
+      txt.appendChild(renderBody(m.text));
       b.appendChild(txt);
       row.appendChild(b);
     } else {
@@ -1864,7 +2024,7 @@ function threadScroll(it, d, a, names) {
       head.appendChild(tm);
       b.appendChild(head);
       const txt = el('div', 'mtext');
-      txt.appendChild(renderMrkdwn(m.text, names));
+      txt.appendChild(renderBody(m.text));
       b.appendChild(txt);
       row.appendChild(b);
     }
@@ -1896,7 +2056,16 @@ function handoffCard(it) {
   if (!h.chat && !h.analysis) return null;
 
   const card = el('div', 'hocard');
-  card.appendChild(el('div', 'hotitle', 'Continue in Claude Code'));
+  // Closed by default: a one-line header until asked for, same as the chat pane's strip
+  // (public/chat.js paintHandoff) — the card is a side door, not the main event.
+  const toggle = el('button', 'hotoggle');
+  toggle.appendChild(el('span', null, h.open ? '▾' : '▸'));
+  toggle.appendChild(el('span', null, 'Continue in Claude Code'));
+  toggle.title = 'keep talking in the terminal, where Claude can use its tools';
+  toggle.addEventListener('click', () => { h.open = !h.open; renderThread(); });
+  card.appendChild(toggle);
+  if (!h.open) return card;
+
   card.appendChild(el('div', 'hosub',
     'Pick this conversation back up in the terminal, where Claude can use its tools and ' +
     'actually go and change things — not just draft a reply.'));
@@ -2322,6 +2491,10 @@ sortSegEl.addEventListener('click', (e) => {
   const b = e.target.closest('.segbtn');
   if (b) setSort(b.dataset.sort);
 });
+if (srcSegEl) srcSegEl.addEventListener('click', (e) => {
+  const b = e.target.closest('.segbtn');
+  if (b) setSourceFilter(b.dataset.source);
+});
 
 /* -------------------------------- boot ----------------------------------- */
 
@@ -2329,6 +2502,7 @@ const hashMatch = /^#\/t\/(\d+)$/.exec(location.hash);
 if (hashMatch) state.cursor = Number(hashMatch[1]);
 
 paintSortControl();      // state.sort came from localStorage; the markup's default may be stale
+paintSourceControl();    // same for the source filter
 renderFeed();
 renderThread();
 renderTitleBadge();

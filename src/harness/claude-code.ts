@@ -8,10 +8,11 @@
  * shapes, the error wording its CLI produces, the `assistant.error` code map, and the
  * `claude auth login` fix command.
  *
- * Read-only is enforced three ways, exactly as before — `tools: []`, `canUseTool`, and
- * the `PreToolUse` hook — but the decision behind all three is now the single core gate
- * handed in by resolveToolAccess(). The adapter cannot filter or shortcut it, and the
- * safety proof below runs the real wiring to make sure it is still attached.
+ * Read-only is enforced three ways, exactly as before — `tools` restricted to the
+ * tool-discovery stub, `canUseTool`, and the `PreToolUse` hook — but the decision behind
+ * all three is now the single core gate handed in by resolveToolAccess(). The adapter
+ * cannot filter or shortcut it, and the safety proof below runs the real wiring to make
+ * sure it is still attached.
  */
 import { createRequire } from 'node:module';
 import {
@@ -20,7 +21,7 @@ import {
   type HookCallback,
   type Options,
 } from '@anthropic-ai/claude-agent-sdk';
-import { DISALLOWED_BUILTIN_TOOLS, makeGate } from './policy.js';
+import { DISALLOWED_BUILTIN_TOOLS, makeGate, TOOL_DISCOVERY_TOOLS } from './policy.js';
 import {
   ClassifiedError,
   HarnessAbortedError,
@@ -113,6 +114,19 @@ export function textFromContent(content: unknown): string {
   return out.join('');
 }
 
+/**
+ * Per-tool-result cap on what a phase-'end' event may carry when the caller asked for
+ * payloads (HarnessRequest.wantToolResults). 256 KiB comfortably holds a full
+ * get_thread response while bounding a pathological one.
+ */
+export const TOOL_RESULT_EVENT_CAP = 262_144;
+
+/** A tool_result's content is either a plain string or an array of typed blocks. */
+export function toolResultText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  return textFromContent(content);
+}
+
 // ---------------------------------------------------------------------------
 // options — the same object the two call sites used to build inline
 // ---------------------------------------------------------------------------
@@ -152,6 +166,24 @@ function attachGate(options: Options, access: ToolAccess): void {
 }
 
 /**
+ * MCP tool schemas stay OUT of the context window until the model searches for them.
+ *
+ * Without this, every run eagerly loaded the schemas of whichever of the user's MCP
+ * servers happened to finish connecting before each API call — the claude.ai connector
+ * fleet measured ~160k tokens on this machine, i.e. ~80% of the window spent before one
+ * word of Slack, and "Continue in Claude Code" reopened those sessions at ~92% full.
+ * 'true' rather than 'auto': server attach timing is racy (MCP startup is non-blocking),
+ * so a threshold decided against whatever is connected at boot picks eager exactly when
+ * the fleet is late. A value already present in the environment wins, so this can be
+ * switched off without a code change.
+ */
+function withMcpDeferralDefault(env: HarnessRequest['env']): Record<string, string> {
+  const out = { ...env } as Record<string, string>;
+  if (out.ENABLE_TOOL_SEARCH === undefined) out.ENABLE_TOOL_SEARCH = 'true';
+  return out;
+}
+
+/**
  * Build the SDK options for one run. Exported so the safety proof and the tests can
  * exercise the real wiring without spawning anything.
  */
@@ -168,11 +200,18 @@ export function buildOptions(
     // Inherit the user's global Claude Code config (incl. their MCP servers) but not
     // this repo's project/local settings — an analysis is not a coding session.
     settingSources: ['user'],
-    tools: [], // no built-in tools at all; MCP tools are configured separately
+    /*
+     * The ONLY built-in is ToolSearch, the tool-discovery stub — measured live: without
+     * it in `tools`, ENABLE_TOOL_SEARCH is silently ignored and every attached MCP
+     * server's schemas load eagerly (~90k tokens observed with this user's connectors,
+     * ~3.9k with deferral on). It cannot read or write anything except tool definitions,
+     * and the core gate admits it by exact name (policy.ts TOOL_DISCOVERY_TOOLS).
+     */
+    tools: [...TOOL_DISCOVERY_TOOLS],
     disallowedTools: DISALLOWED_BUILTIN_TOOLS,
     permissionMode: 'default',
     persistSession: true, // required: the chat feature resumes this session id later
-    env: req.env as Record<string, string>,
+    env: withMcpDeferralDefault(req.env),
     stderr: (data: string) => {
       const line = data.trim();
       if (line !== '') onStderr(line.slice(0, 300));
@@ -283,11 +322,31 @@ async function* runClaudeCode(req: HarnessRequest): AsyncGenerator<HarnessEvent>
         const content = (message.message as { content?: unknown }).content;
         if (Array.isArray(content)) {
           for (const block of content) {
-            const b = block as { type?: string; tool_use_id?: unknown; is_error?: unknown };
+            const b = block as {
+              type?: string;
+              tool_use_id?: unknown;
+              is_error?: unknown;
+              content?: unknown;
+            };
             if (b?.type === 'tool_result') {
               const name =
                 typeof b.tool_use_id === 'string' ? (toolNames.get(b.tool_use_id) ?? '') : '';
-              yield { type: 'tool', name, phase: 'end', ok: b.is_error !== true };
+              if (req.wantToolResults === true) {
+                // Raw tool output for core (attacker-controlled bytes — the consumer's
+                // contract is in types.ts). Bounded so one huge mailbox page cannot make
+                // the event stream the memory hog the context window no longer is.
+                const raw = toolResultText(b.content);
+                yield {
+                  type: 'tool',
+                  name,
+                  phase: 'end',
+                  ok: b.is_error !== true,
+                  result: raw.slice(0, TOOL_RESULT_EVENT_CAP),
+                  resultTruncated: raw.length > TOOL_RESULT_EVENT_CAP,
+                };
+              } else {
+                yield { type: 'tool', name, phase: 'end', ok: b.is_error !== true };
+              }
             }
           }
         }
@@ -380,7 +439,11 @@ const CLAUDE_PROOF: SafetyProof = {
     if (typeof options.canUseTool !== 'function') throw new Error('canUseTool is not wired');
     const hook = options.hooks?.PreToolUse?.[0]?.hooks?.[0];
     if (typeof hook !== 'function') throw new Error('the PreToolUse hook is not wired');
-    if (JSON.stringify(options.tools) !== '[]') throw new Error('tools is not empty');
+    // The only built-in allowed through is the tool-discovery stub — anything else in
+    // `tools` would be a side-effect-capable tool the gates never see coming.
+    if (JSON.stringify(options.tools) !== JSON.stringify(TOOL_DISCOVERY_TOOLS)) {
+      throw new Error('tools must be exactly the tool-discovery stub');
+    }
     if ((options.disallowedTools ?? []).length === 0) throw new Error('disallowedTools is empty');
 
     let denied = 0;
@@ -407,6 +470,14 @@ const CLAUDE_PROOF: SafetyProof = {
     } as Parameters<CanUseTool>[2]);
     if (readOnly?.behavior !== 'allow') throw new Error('the gate refuses read-only MCP tools too');
 
+    // …and the discovery stub, or MCP deferral silently becomes "no tools at all".
+    for (const name of TOOL_DISCOVERY_TOOLS) {
+      const discovery = await options.canUseTool(name, {}, {
+        signal: abort.signal,
+      } as Parameters<CanUseTool>[2]);
+      if (discovery?.behavior !== 'allow') throw new Error(`the gate refuses ${name}`);
+    }
+
     return {
       wroteFile: false,
       reachedNetwork: false,
@@ -422,7 +493,7 @@ const CLAUDE_PROOF: SafetyProof = {
 
 const CAPABILITY_TOOLS = {
   mode: 'read-only',
-  mechanism: 'tools: [] + disallowedTools + canUseTool + PreToolUse hook',
+  mechanism: 'tools: [ToolSearch] + disallowedTools + canUseTool + PreToolUse hook',
   enforcement: 'core-gate',
   proof: CLAUDE_PROOF,
   wireGate: (access: ReadOnlyAccess, ctx: { target: unknown }): void => {

@@ -37,6 +37,49 @@ export function loadWorkspaces(): Workspace[] {
 
 export const workspaces: Workspace[] = loadWorkspaces();
 
+/**
+ * Optional display labels for the workspace slots — `SLACK_A_LABEL=AI Fund` in .env
+ * makes the UI say "AI Fund" wherever it would have said "A". Purely cosmetic, per
+ * person, and deliberately in .env with the tokens: this repo never hardcodes whose
+ * workspaces the slots hold. Absent label → the UI falls back to the team name Slack
+ * reports, then the bare slot letter.
+ */
+export function loadWorkspaceLabels(): Record<string, string> {
+  const labels: Record<string, string> = {};
+  for (const key of ['A', 'B']) {
+    const raw = (process.env[`SLACK_${key}_LABEL`] ?? '').trim();
+    if (raw !== '') labels[key] = raw.slice(0, 24);
+  }
+  return labels;
+}
+
+export const workspaceLabels: Record<string, string> = loadWorkspaceLabels();
+
+/**
+ * Email ingest (docs/email-ingest.md). OFF unless COPILOT_EMAIL=1 — every poll is a
+ * model run, and switching that spend on must be the user's explicit choice, not a
+ * side effect of updating the app.
+ */
+export const EMAIL_ENABLED: boolean = (process.env.COPILOT_EMAIL ?? '').trim() === '1';
+
+/** COPILOT_EMAIL_POLL_MINUTES, clamped to [5, 240]; default 30. Email is not Slack. */
+export const EMAIL_POLL_MINUTES: number = (() => {
+  const raw = (process.env.COPILOT_EMAIL_POLL_MINUTES ?? '').trim();
+  const n = raw === '' ? NaN : Number(raw);
+  if (!Number.isFinite(n)) return 30;
+  return Math.min(240, Math.max(5, Math.round(n)));
+})();
+
+/**
+ * COPILOT_EMAIL_ADDRESS — the watched mailbox, e.g. isha@aifund.ai. Optional; used for
+ * the `?authuser=` Gmail deep-link form (correct when signed into several Google
+ * accounts) and as the mailbox name in the UI. Identity lives in .env, never in code.
+ */
+export const EMAIL_ADDRESS: string | null = (() => {
+  const raw = (process.env.COPILOT_EMAIL_ADDRESS ?? '').trim();
+  return raw.includes('@') ? raw : null;
+})();
+
 export const PORT: number = (() => {
   const raw = (process.env.PORT ?? '').trim();
   const n = raw === '' ? NaN : Number(raw);

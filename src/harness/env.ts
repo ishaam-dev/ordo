@@ -19,8 +19,13 @@
  */
 import type { EnvPolicy, HarnessEnv, HarnessProvider } from './types.js';
 
-/** Non-negotiable, non-overridable, applied last so no provider can re-admit it. */
-const GLOBAL_DENY_PREFIXES = ['SLACK_'] as const;
+/**
+ * Non-negotiable, non-overridable, applied last so no provider can re-admit it.
+ * GOOGLE_/GMAIL_ are here ahead of need (docs/email-ingest.md §10.5): the moment any
+ * future transport puts a Google credential in the environment, it must already be
+ * impossible for that credential to reach a model subprocess.
+ */
+const GLOBAL_DENY_PREFIXES = ['SLACK_', 'GOOGLE_', 'GMAIL_'] as const;
 
 /**
  * The harness switches, read here because this is the file allowed to touch process.env.

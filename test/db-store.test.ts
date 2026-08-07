@@ -262,7 +262,12 @@ test('getFeed: carries the newest message and a message count', () => {
 
   const [item] = db.getFeed();
   assert.equal(item.message_count, 3);
-  assert.deepEqual(item.last_message, { author_name: 'Bob', text: 'latest', ts: '1000.000300' });
+  assert.deepEqual(item.last_message, {
+    author_id: 'U_OTHER',
+    author_name: 'Bob',
+    text: 'latest',
+    ts: '1000.000300',
+  });
 });
 
 test('getFeed: a thread with no messages has last_message null and count 0', () => {

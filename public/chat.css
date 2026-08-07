@@ -31,7 +31,15 @@
 .ccursor { display: inline-block; width: 6px; color: var(--accent); animation: cblink 1s steps(2) infinite; }
 @keyframes cblink { 50% { opacity: 0; } }
 
-/* ---- tool rows ---- */
+/* ---- tool rows: one quiet, expandable group per turn ---- */
+.ctoolgroup { display: flex; flex-direction: column; gap: 2px; align-self: flex-start; }
+.ctoolhead {
+  font-family: var(--mono); font-size: 10px; color: var(--text-3);
+  background: none; border: 1px solid var(--border); border-radius: 6px;
+  padding: 3px 8px; cursor: pointer; text-align: left;
+}
+.ctoolhead:hover { color: var(--text-2); }
+.ctoollist { display: flex; flex-direction: column; gap: 2px; padding-left: 10px; }
 .ctool {
   display: flex; align-items: center; gap: 6px; font-family: var(--mono);
   font-size: 10px; color: var(--text-3); border: 1px solid var(--border);
@@ -39,6 +47,27 @@
 }
 .ctool.ok { color: var(--text-2); }
 .ctool.bad { color: var(--warn); border-color: var(--warn); }
+
+/* ---- markdown-lite inside bubbles ---- */
+.cmsg .cbubble ul, .cmsg .cbubble ol { margin: 0 0 6px; padding-left: 18px; }
+.cmsg .cbubble li { margin: 2px 0; }
+.cmsg .cbubble code {
+  font-family: var(--mono); font-size: .92em; background: var(--surface-2);
+  border-radius: 3px; padding: 0 3px;
+}
+.cmsg .cbubble .mdh { margin-top: 8px; }
+.cmsg .cbubble .mdq {
+  color: var(--text-2); border-left: 2px solid var(--border);
+  padding-left: 8px; margin: 0 0 6px;
+}
+
+/* ---- restart-from-here, revealed on hover ---- */
+.crewind {
+  background: none; border: 0; color: var(--text-3); cursor: pointer;
+  font-size: 11px; padding: 0 2px; margin-left: 6px; visibility: hidden;
+}
+.cmsg:hover .crewind { visibility: visible; }
+.crewind:hover { color: var(--text); }
 
 /* ---- draft-reply card: the only send path ---- */
 .draftcard {

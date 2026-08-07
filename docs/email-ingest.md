@@ -1,5 +1,20 @@
 # Email ingest — design and auth investigation
 
+> **Status (2026-08-06): v1 SHIPPED on option 3 (harness transport), per §11.** Flag:
+> `COPILOT_EMAIL=1`; poll cadence `COPILOT_EMAIL_POLL_MINUTES` (default 30). Implemented:
+> `src/email.ts` (fused poll+triage, one run does both), allowlist gate (`policy.ts`
+> purpose `'email'` — without `list_labels`, which the mutation net would flag anyway),
+> tool-result payloads through `HarnessEvent` (E6's mitigation, built in from day one),
+> shared tables + `source` column, watch-start with no history import, 40/day cap,
+> 5-minute settle, read-only replies (Copy + Open in Gmail). Deep link stored as
+> `https://mail.google.com/mail/?authuser=<address>#all/<hexid>` when
+> `COPILOT_EMAIL_ADDRESS` is set (bare `#all/` form otherwise) — **E1 (cold-click test)
+> still needs a human click**; E2 (Internal OAuth availability) still decides v2.
+> Product-owner amendments to this design, both shipped: a one-time **first fill** seeds
+> the 5 most recent qualifying threads as 'seen' (never unread — §8's principle, with
+> N=5), and the feed has an **All / Slack / ✉ source filter** (§6 recommended none in
+> v1; overruled by the owner, default stays the combined list).
+
 **Status: a proposal. Nothing in `src/` or `public/` has been changed by this document.**
 
 Companion to `DESIGN.md` (§1 ingest, §2 catch-up + the watch-start rule, §4 the harness layer),

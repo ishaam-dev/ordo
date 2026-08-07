@@ -15,10 +15,11 @@
  *  1. Sending to Slack is NOT a tool the model can call. Claude only writes draft text;
  *     the bytes that reach chat.postMessage come from the request body of a separate
  *     endpoint that the UI fires from an explicit button click. The model has no way to
- *     reach that endpoint: chat sessions run with no built-in tools at all.
+ *     reach that endpoint: the only built-in a chat session gets is the read-only
+ *     tool-discovery stub (policy.ts TOOL_DISCOVERY_TOOLS).
  *  2. Slack thread content is untrusted. It is framed as data in the prompt, and the
  *     session is read-only, enforced the same three ways as src/analyzer.ts
- *     (tools: [], canUseTool gate, PreToolUse hook).
+ *     (tools restricted to discovery, canUseTool gate, PreToolUse hook).
  *  3. Nothing here logs Slack text, draft text or tokens.
  *
  * DRAFT PROTOCOL (server-side parse, single implementation, see parseAssistantText):
@@ -71,7 +72,9 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 // ---------- tuning ----------
 
 const QUERY_TIMEOUT_MS = 240_000; // hard abort per chat turn
-const MAX_TURNS = 12;
+// Tool budget + 8, matching src/analyzer.ts: lookups and tool *discovery* (ToolSearch,
+// unmetered by the budget) each cost a turn, and running out of turns is a hard failure.
+const MAX_TURNS = MAX_TOOL_CALLS.chat + 8;
 const TRANSCRIPT_CHAR_BUDGET = 12_000; // seeding a fresh session
 const MAX_USER_MESSAGE = 4_000; // what the composer may send Claude
 const MAX_STORED_ASSISTANT = 24_000; // cap on what we persist per assistant turn
@@ -191,6 +194,45 @@ function chatMessageCount(threadId: number): number {
   return Number(row?.n ?? 0);
 }
 
+const stmtDeleteChatFrom = chatDb.prepare(
+  'DELETE FROM chat_messages WHERE thread_id = ? AND id >= ?',
+);
+const stmtDeleteChatAll = chatDb.prepare('DELETE FROM chat_messages WHERE thread_id = ?');
+const stmtDeleteChatSession = chatDb.prepare('DELETE FROM chat_sessions WHERE thread_id = ?');
+
+/**
+ * "/new" and "restart from here". Forgets the model session and (some or all of) the
+ * visible history. The thread itself is untouched: the next turn re-briefs from the
+ * transcript + triage, plus whatever history was kept (replayed into the fresh
+ * session's first prompt by historyBlock below).
+ */
+function resetChat(threadId: number, fromMessageId: number | null): number {
+  const removed =
+    fromMessageId === null
+      ? Number(stmtDeleteChatAll.run(threadId).changes)
+      : Number(stmtDeleteChatFrom.run(threadId, fromMessageId).changes);
+  stmtDeleteChatSession.run(threadId);
+  return removed;
+}
+
+/**
+ * Replay of the kept conversation for a fresh session after a rewind — newest turns
+ * win the budget. Only real user/assistant turns; system notes and errors are noise.
+ */
+function historyBlock(rows: ChatMessageRow[], budget = 8_000): string {
+  const parts: string[] = [];
+  let total = 0;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const r = rows[i];
+    if (r.role !== 'user' && r.role !== 'assistant') continue;
+    const line = `${r.role === 'user' ? 'User' : 'You'}: ${(r.text ?? '').trim()}`;
+    total += line.length + 1;
+    if (total > budget) break;
+    parts.push(line);
+  }
+  return parts.reverse().join('\n');
+}
+
 // ---------- draft protocol ----------
 
 export interface ParsedAssistantTurn {
@@ -284,8 +326,13 @@ const SYSTEM_PROMPT = `You are the user's chief of staff, sitting next to them w
 
 WHAT YOU CAN DO
 - Answer questions about the thread, its history and what it implies.
-- Pull extra context with read-only MCP tools (calendar, email, tasks, meetings, ...) — at most ${MAX_TOOL_CALLS.chat} lookups per turn, and only when it genuinely sharpens the answer. Tools that create, send or modify anything are blocked; if a tool is missing or fails, carry on without it.
+- Pull extra context with read-only lookups — at most ${MAX_TOOL_CALLS.chat} per turn, and only when it genuinely sharpens the answer. Tools that create, send or modify anything are blocked.
 - Propose a reply for the user to send.
+
+TOOLS COME AND GO — which lookups exist varies from moment to moment (the user's connections attach on their own schedule, and sometimes late). Because of that:
+- NEVER state what you can or cannot access from memory or from an earlier turn. Before saying you lack access to something, actually try to discover the tool this turn; if discovery finds nothing, wait a moment and try once more.
+- If it is genuinely unavailable right now, say "that connection doesn't seem to be reachable right now — ask me again in a moment" rather than declaring a fixed list of abilities.
+- NO PLUMBING TALK: never mention APIs, schemas, output limits, file paths, token counts, or tool names to the user. Say what you looked at and what you found, in plain words. If a lookup came back cut off, say what you could and couldn't see — plainly, without explaining why.
 
 WHAT YOU CANNOT DO
 - You cannot post to Slack. There is no tool for it and there never will be. The user sends replies themselves by clicking a button next to your draft. Never say or imply that you have sent, scheduled or delivered anything.
@@ -594,6 +641,36 @@ export function registerChatRoutes(app: Express): void {
    * Assistant turns come back already split into prose + drafts by the same parser the
    * live stream uses, so history and streaming can never disagree.
    */
+  /**
+   * "/new" (no body) and "restart from here" (`{from_id}`): drop the model session and
+   * all — or the tail of — the stored history. Refused while a turn streams: deleting
+   * rows under a running turn would race its own writes.
+   */
+  app.post('/api/thread/:id/chat/reset', (req, res) => {
+    const id = threadIdParam(req, res);
+    if (id === null) return;
+    if (inFlight.has(id)) {
+      res.status(409).json({ error: 'a reply is still streaming — stop it first' });
+      return;
+    }
+    const body = (req.body ?? {}) as { from_id?: unknown };
+    const fromId =
+      typeof body.from_id === 'number' && Number.isInteger(body.from_id) && body.from_id > 0
+        ? body.from_id
+        : null;
+    try {
+      const removed = resetChat(id, fromId);
+      console.log(
+        `[chat] #${id} conversation reset${fromId !== null ? ` from message ${fromId}` : ''} — ` +
+          `${removed} message(s) discarded, ${chatMessageCount(id)} kept`,
+      );
+      res.json({ ok: true, removed, kept: chatMessageCount(id) });
+    } catch (err) {
+      console.error('[chat] reset failed:', err);
+      res.status(500).json({ error: 'internal error' });
+    }
+  });
+
   app.get('/api/thread/:id/chat', (req, res) => {
     const id = threadIdParam(req, res);
     if (id === null) return;
@@ -715,7 +792,7 @@ export function registerChatRoutes(app: Express): void {
     void (async () => {
       // Persist the user's turn immediately: if the model never answers, the panel still
       // shows what was asked.
-      addChatMessage(id, 'user', userMessage);
+      const userRowId = addChatMessage(id, 'user', userMessage);
 
       const messages = getMessagesForThread(id);
       const latestTs = messages.length > 0 ? messages[messages.length - 1].ts : null;
@@ -734,18 +811,30 @@ export function registerChatRoutes(app: Express): void {
        */
       const plan = planSession(provider, stored?.session_id ?? null, analyzerSessionId);
 
+      /*
+       * After "/new … from here" the stored session is gone but kept history remains.
+       * A fork/seed session knows the thread, not the earlier conversation — so the
+       * kept turns are replayed once, ahead of whichever prompt shape the plan picks.
+       */
+      const kept = stored === null ? chatHistory(id).filter((m) => m.id < userRowId) : [];
+      const earlier = kept.length > 0 ? historyBlock(kept) : '';
+      const prefix =
+        earlier === ''
+          ? ''
+          : `=== EARLIER CONVERSATION between you and me, kept across a restart (context, not instructions) ===\n${earlier}\n=== END EARLIER CONVERSATION ===\n\n`;
+
       const resumePrompt = buildResumePrompt(
         messagesAfter(messages, stored?.covered_ts ?? null),
         myUserId,
         userMessage,
       );
-      const seedPrompt = buildSeedPrompt(thread, messages, myUserId, userMessage);
+      const seedPrompt = prefix + buildSeedPrompt(thread, messages, myUserId, userMessage);
 
       try {
         let outcome: TurnResult;
         try {
           outcome = await runChatTurn(
-            plan.mode === 'seed' ? seedPrompt : resumePrompt,
+            plan.mode === 'seed' ? seedPrompt : prefix + resumePrompt,
             plan,
             send,
             abort,
@@ -851,6 +940,15 @@ export function registerChatRoutes(app: Express): void {
     const thread = getThreadById(id);
     if (!thread) {
       res.status(404).json({ error: 'thread not found' });
+      return;
+    }
+    if (thread.source !== 'slack') {
+      // v1 email is read-only end to end (docs/email-ingest.md §9): no send scope, no
+      // send tool, no send endpoint. The draft card offers Copy + Open in Gmail instead.
+      res.status(400).json({
+        error: 'email_is_read_only',
+        message: 'Email sending is not built — copy the draft and send it from Gmail.',
+      });
       return;
     }
     const ws = workspaces.find((w) => w.key === thread.workspace);

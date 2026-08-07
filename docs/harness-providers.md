@@ -28,7 +28,7 @@ Verified by reading `src/analyzer.ts`, `src/chat.ts`, `src/health.ts`, `src/serv
 | # | Leak | Where | SDK feature relied on |
 |---|---|---|---|
 | 1 | Session persist / resume / fork | `analyses.session_id`, `chat_sessions`, `chat.ts:563-568` | `persistSession`, `resume`, `forkSession` |
-| 2 | Read-only enforcement ×3 | `analyzer.ts:319-349`, `chat.ts:512-542` | `tools: []`, `disallowedTools`, `canUseTool`, `hooks.PreToolUse` |
+| 2 | Read-only enforcement ×3 | `analyzer.ts:319-349`, `chat.ts:512-542` | `tools: ['ToolSearch']` (discovery stub only), `disallowedTools`, `canUseTool`, `hooks.PreToolUse` |
 | 3 | MCP inheritance | `settingSources: ['user']` in both | `settingSources` |
 | 4 | Token streaming | `chat.ts:575-587` | `includePartialMessages` + `stream_event` |
 | 5 | Failure classification | `health.ts:149-196`, `chat.ts:452-467` | SDK/CLI error *wording*, `SDKAssistantMessage.error` codes |
@@ -110,7 +110,7 @@ strict *loss*. Five concrete reasons:
    `session/request_permission` — a permission *prompt*, answered per call with
    `allow_once | allow_always | reject_once | reject_always`. Which calls raise a prompt is the
    agent adapter's decision, not the protocol's. We would lose direct `canUseTool` (our gate),
-   `hooks.PreToolUse` (our second net), `tools: []` (no built-ins at all), `settingSources`
+   `hooks.PreToolUse` (our second net), `tools: ['ToolSearch']` (no built-ins beyond discovery), `settingSources`
    (MCP inheritance — ACP has the client pass `mcpServers` explicitly on `session/new`, so
    "the user's own MCP servers" stops being inherited and becomes something we must enumerate),
    and `Options.env` (our `SLACK_*` strip — an out-of-process agent inherits its own env).
@@ -305,7 +305,7 @@ export type ToolAccess =
 
 export interface HarnessRequest {
   /** 'analysis' (background, untrusted input, JSON out) or 'chat' (user-driven, streamed). */
-  readonly purpose: 'analysis' | 'chat';
+  readonly purpose: 'analysis' | 'chat' | 'email';
   readonly systemPrompt: string;
   readonly prompt: string;
   readonly session: SessionPlan;
@@ -318,7 +318,7 @@ export interface HarnessRequest {
   readonly cwd: string;
   /** From COPILOT_HARNESS_MODEL, resolved in config.ts. Providers may ignore it. */
   readonly model?: string;
-  /** Set only when purpose==='analysis'. Adapters with structuredOutput may use it. */
+  /** Set for 'analysis' and 'email' runs. Adapters with structuredOutput may use it. */
   readonly jsonSchema?: Record<string, unknown>;
   /** Optional per-run spend ceiling, for harnesses that can enforce one. */
   readonly maxBudgetUsd?: number;
@@ -679,7 +679,7 @@ same messages:
 | `result` success | `{type:'result', text, usage:{costUsd: total_cost_usd, …}}` |
 | `assistant.error` code | `throw new ClassifiedError(kindOfAssistantError(code), …)` |
 
-Capabilities: `tools: { mode:'read-only', enforcement:'core-gate', mechanism:'tools: [] +
+Capabilities: `tools: { mode:'read-only', enforcement:'core-gate', mechanism:'tools: [ToolSearch] +
 disallowedTools + canUseTool + PreToolUse hook', wireGate, proof }`, `resumeSession: true`,
 `forkSession: true`, `streaming: true`, `mcpInheritance: true`, `structuredOutput: true`,
 `billing: 'subscription'`. `classifyError` owns `AUTH_RE`/`BUDGET_RE`/`RATE_RE`/`TIMEOUT_RE`,

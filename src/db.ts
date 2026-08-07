@@ -173,6 +173,18 @@ function addColumnIfMissing(table: string, column: string, definition: string): 
  */
 addColumnIfMissing('messages', 'deleted_at', 'TEXT');
 
+/*
+ * Email rows share these tables (docs/email-ingest.md §5 — one ranked list is the
+ * product, and a second implementation of status/staleness/watch-start is the class of
+ * bug policy.ts exists to prevent). Additive only; every existing row reads 'slack' from
+ * the default, which is true. `kind` deliberately keeps its CHECK values: for email,
+ * 'dm' = the user is in To:, 'mention' = merely copied — the distinction the analyzer
+ * and UI already reason about, and the CHECK cannot be extended without a rebuild.
+ */
+addColumnIfMissing('threads', 'source', "TEXT NOT NULL DEFAULT 'slack'");
+addColumnIfMissing('threads', 'subject', 'TEXT');
+addColumnIfMissing('threads', 'recipient_role', 'TEXT');
+
 // ---------- row shapes ----------
 
 export interface ThreadRow {
@@ -186,6 +198,12 @@ export interface ThreadRow {
   status: string;
   last_activity: string | null;
   permalink: string | null;
+  /** 'slack' | 'gmail'. Every pre-email row reads 'slack' from the column default. */
+  source: string;
+  /** Email subject; null for Slack rows. */
+  subject: string | null;
+  /** 'to' | 'cc' | 'bcc' | 'bulk'; null for Slack rows. */
+  recipient_role: string | null;
 }
 
 export interface MessageRow {
@@ -259,8 +277,18 @@ export interface FeedItem {
   why: string | null;
   summary: string | null;
   suggested_action: string | null;
-  last_message: { author_name: string | null; text: string | null; ts: string } | null;
+  last_message: {
+    author_id: string | null;
+    author_name: string | null;
+    text: string | null;
+    ts: string;
+  } | null;
   message_count: number;
+  /** Names for user ids mentioned inline in last_message.text (known ids only). */
+  names: Record<string, string>;
+  source: string;
+  subject: string | null;
+  recipient_role: string | null;
 }
 
 /** A conversation we already track, for the cheap incremental catch-up sweep. */
@@ -341,8 +369,9 @@ const stmtStaleAnalysis = db.prepare(
 const stmtFeed = db.prepare(
   `SELECT
      t.id, t.workspace, t.team_name, t.channel_name, t.kind, t.status, t.last_activity, t.permalink,
+     t.source, t.subject, t.recipient_role,
      a.urgency, a.why, a.summary, a.suggested_action,
-     lm.author_name AS last_author_name, lm.text AS last_text, lm.ts AS last_ts,
+     lm.author_id AS last_author_id, lm.author_name AS last_author_name, lm.text AS last_text, lm.ts AS last_ts,
      (SELECT COUNT(*) FROM messages mc WHERE mc.thread_id = t.id) AS message_count
    FROM threads t
    LEFT JOIN analyses a ON a.thread_id = t.id
@@ -556,12 +585,20 @@ export function getFeed(): FeedItem[] {
     last_message:
       r.last_ts != null
         ? {
+            author_id: (r.last_author_id as string | null) ?? null,
             author_name: (r.last_author_name as string | null) ?? null,
             text: (r.last_text as string | null) ?? null,
             ts: r.last_ts as string,
           }
         : null,
     message_count: Number(r.message_count),
+    names: getSlackUserNames(
+      r.workspace as string,
+      mentionedUserIds(r.last_text as string | null),
+    ),
+    source: (r.source as string | null) ?? 'slack',
+    subject: (r.subject as string | null) ?? null,
+    recipient_role: (r.recipient_role as string | null) ?? null,
   }));
 }
 
@@ -627,7 +664,7 @@ const stmtUsersNeedingProfile = db.prepare(
      FROM messages m
      JOIN threads t ON t.id = m.thread_id
      LEFT JOIN slack_users u ON u.workspace = t.workspace AND u.user_id = m.author_id
-    WHERE t.workspace = ?
+    WHERE t.workspace = ? AND t.source = 'slack'
       AND m.author_id IS NOT NULL
       AND (u.user_id IS NULL OR u.updated_at IS NULL OR u.updated_at < ?)
     GROUP BY m.author_id
@@ -656,6 +693,116 @@ export function upsertSlackUser(p: SlackUserProfile): void {
 
 export function getSlackUser(workspace: string, userId: string): SlackUserRow | undefined {
   return stmtGetSlackUser.get(workspace, userId) as SlackUserRow | undefined;
+}
+
+/*
+ * Inline mentions. Slack stores a mention as `<@U123>` (or `<@U123|handle>`), and the
+ * UI can only print "@Ruby Chen" for ids it has a name for — so the feed and thread
+ * payloads carry a small id → name map covering exactly the ids their text mentions,
+ * never a full user directory.
+ */
+const MENTION_ID_RE = /<@([UW][A-Z0-9]{2,})(?:\|[^>]*)?>/g;
+
+/** Distinct user ids mentioned inline in one blob of Slack message text. */
+export function mentionedUserIds(text: string | null | undefined): string[] {
+  if (!text || !text.includes('<@')) return [];
+  const out = new Set<string>();
+  for (const m of text.matchAll(MENTION_ID_RE)) out.add(m[1]);
+  return [...out];
+}
+
+/** id → display name for the ids we know; ids without a stored profile are absent. */
+export function getSlackUserNames(
+  workspace: string,
+  ids: Iterable<string>,
+): Record<string, string> {
+  const names: Record<string, string> = {};
+  for (const id of ids) {
+    const u = getSlackUser(workspace, id);
+    const name = u?.display_name ?? u?.real_name ?? null;
+    if (name !== null) names[id] = name;
+  }
+  return names;
+}
+
+/*
+ * Recent message texts that mention somebody, newest first — the profile sweep mines
+ * these for ids worth a users.info call. Text-bearing rows only: the LIKE both narrows
+ * the scan and matches mentionedUserIds() returning nothing for the rest.
+ */
+const stmtRecentMentionTexts = db.prepare(
+  `SELECT m.text AS text
+     FROM messages m
+     JOIN threads t ON t.id = m.thread_id
+    WHERE t.workspace = ? AND t.source = 'slack' AND m.text LIKE '%<@%'
+    ORDER BY CAST(m.ts AS REAL) DESC
+    LIMIT ?`,
+);
+
+export function listRecentMentionTexts(workspace: string, limit: number): string[] {
+  const rows = stmtRecentMentionTexts.all(workspace, limit) as Array<{ text: string | null }>;
+  return rows.map((r) => r.text).filter((t): t is string => t !== null);
+}
+
+// ---------- email rows (docs/email-ingest.md §5) ----------
+
+/**
+ * Email lives in reserved workspace 'G' with a constant channel — the third slot the
+ * schema already supports. thread_ts holds the Gmail thread id (hex string), which keys
+ * uniqueness exactly like a Slack thread ts does.
+ */
+export const EMAIL_WORKSPACE = 'G';
+export const EMAIL_CHANNEL = 'INBOX';
+
+/**
+ * Mint a message ts in exactly the Slack shape — epoch seconds, dot, six digits — so
+ * lexical ordering, CAST AS REAL, relTime() and the monotonic last_activity rule all
+ * hold. The six digits are a stable hash of the Gmail message id (not a counter), so a
+ * re-sweep mints the same ts and the UNIQUE(thread_id, ts) constraint dedupes.
+ */
+export function emailTs(epochSeconds: number, messageId: string): string {
+  let h = 5381;
+  for (let i = 0; i < messageId.length; i++) h = ((h * 33) ^ messageId.charCodeAt(i)) >>> 0;
+  return `${Math.max(0, Math.floor(epochSeconds))}.${String(h % 1_000_000).padStart(6, '0')}`;
+}
+
+const stmtInsertEmailThread = db.prepare(
+  `INSERT INTO threads
+     (workspace, team_name, channel_id, channel_name, thread_ts, kind, status,
+      last_activity, permalink, source, subject, recipient_role)
+   VALUES (?, ?, ?, ?, ?, ?, 'new', ?, ?, 'gmail', ?, ?)
+   ON CONFLICT(workspace, channel_id, thread_ts) DO NOTHING`,
+);
+
+/** Same DO-NOTHING-then-reread shape as insertThread, for the same two-writer reason. */
+export function insertEmailThread(t: {
+  gmailThreadId: string;
+  mailbox: string | null;
+  senderName: string | null;
+  kind: 'dm' | 'mention';
+  lastActivity: string;
+  permalink: string | null;
+  subject: string | null;
+  recipientRole: 'to' | 'cc' | 'bcc' | 'bulk';
+}): { id: number; created: boolean } {
+  const res = stmtInsertEmailThread.run(
+    EMAIL_WORKSPACE,
+    t.mailbox,
+    EMAIL_CHANNEL,
+    t.senderName,
+    t.gmailThreadId,
+    t.kind,
+    t.lastActivity,
+    t.permalink,
+    t.subject,
+    t.recipientRole,
+  );
+  if (res.changes > 0) return { id: Number(res.lastInsertRowid), created: true };
+  const existing = findThread(EMAIL_WORKSPACE, EMAIL_CHANNEL, t.gmailThreadId);
+  if (existing === undefined) {
+    throw new Error(`insertEmailThread: conflict on ${t.gmailThreadId} but no row found`);
+  }
+  return { id: existing.id, created: false };
 }
 
 /**
@@ -713,13 +860,19 @@ const stmtLatestStoredTs = db.prepare(
     LIMIT 1`,
 );
 
+/*
+ * source='slack' on the backfill/profile helpers is belt-and-suspenders (email lives in
+ * workspace 'G', which no Slack runtime queries) — but a Gmail thread id handed to
+ * conversations.history would be a confusing 4xx, so the row-level guarantee is cheap
+ * and testable (docs/email-ingest.md §5).
+ */
 const stmtTrackedConversations = db.prepare(
-  'SELECT DISTINCT channel_id, kind FROM threads WHERE workspace = ?',
+  "SELECT DISTINCT channel_id, kind FROM threads WHERE workspace = ? AND source = 'slack'",
 );
 
 const stmtRecentMentionThreads = db.prepare(
   `SELECT channel_id, thread_ts FROM threads
-    WHERE workspace = ? AND kind = 'mention'
+    WHERE workspace = ? AND kind = 'mention' AND source = 'slack'
       AND last_activity IS NOT NULL
       AND CAST(last_activity AS REAL) >= CAST(? AS REAL)
     ORDER BY CAST(last_activity AS REAL) DESC
@@ -924,6 +1077,7 @@ const stmtThreadsNeedingAnalysis = db.prepare(
   `SELECT t.* FROM threads t
    LEFT JOIN analyses a ON a.thread_id = t.id
    WHERE t.status != 'done'
+     AND t.source = 'slack'
      AND t.last_activity IS NOT NULL
      AND (
        a.thread_id IS NULL
@@ -1058,13 +1212,16 @@ export function migrateDmThreadKeys(): DmMigrationResult {
     analysesAfter: 0,
   };
 
-  // Groups that are not already "one row, keyed on the channel id".
+  // Groups that are not already "one row, keyed on the channel id". SLACK ROWS ONLY:
+  // email threads are kind='dm' too and ALL share ('G','INBOX') — this migration once
+  // folded three of them into one thread (real data loss, restored from backup). Email
+  // is keyed per Gmail thread id and must be invisible to every Slack-shaped repair.
   const stmtGroups = db.prepare(
     `SELECT workspace, channel_id,
             COUNT(*) AS n,
             SUM(CASE WHEN thread_ts = channel_id THEN 1 ELSE 0 END) AS canonical
        FROM threads
-      WHERE kind = 'dm'
+      WHERE kind = 'dm' AND source = 'slack'
       GROUP BY workspace, channel_id
      HAVING n > 1 OR canonical = 0`,
   );
@@ -1081,7 +1238,7 @@ export function migrateDmThreadKeys(): DmMigrationResult {
   result.backupPath = backupDatabase();
 
   const rowsOfGroup = db.prepare(
-    "SELECT * FROM threads WHERE kind = 'dm' AND workspace = ? AND channel_id = ? ORDER BY id ASC",
+    "SELECT * FROM threads WHERE kind = 'dm' AND source = 'slack' AND workspace = ? AND channel_id = ? ORDER BY id ASC",
   );
   const repoint = db.prepare('UPDATE OR IGNORE messages SET thread_id = ? WHERE thread_id = ?');
   const dropLeftoverMessages = db.prepare('DELETE FROM messages WHERE thread_id = ?');
