@@ -261,6 +261,20 @@
   .quoted-toggle{background:none;border:0;padding:0;color:var(--text-3);font-size:11.5px;
     cursor:pointer;font-family:inherit;text-decoration:underline dotted}
   .quoted-text{color:var(--text-3);border-left:2px solid var(--border);padding-left:8px;margin-top:4px}
+  /* items: the extracted obligations inside a thread */
+  .itemscard{border:1px solid var(--border);border-radius:9px;background:var(--surface);
+    padding:11px 13px;margin:0 0 12px}
+  .itemrow{display:flex;align-items:center;gap:7px;padding:5px 0;cursor:pointer;
+    border-top:1px solid var(--border);font-size:12.5px}
+  .itemrow:first-of-type{border-top:0;margin-top:4px}
+  .itemrow input{accent-color:var(--ok);cursor:pointer;flex:none}
+  .itemrow .ititle{color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .itemrow.done .ititle{color:var(--text-3);text-decoration:line-through}
+  .itemrow .itag{font-size:10px;color:var(--text-3);border:1px solid var(--border);
+    border-radius:4px;padding:0 5px;flex:none;white-space:nowrap}
+  .itemrow .itag.due{color:var(--warn);border-color:var(--line-warn)}
+  .items-chip{font-size:10px;color:var(--text-2);border:1px solid var(--border);
+    border-radius:8px;padding:0 6px;flex:none;white-space:nowrap}
   .chan{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-2);max-width:19ch;flex:none}
   .kind{color:var(--text-3);flex:none}
   .ctime{margin-left:auto;font-family:var(--mono);font-size:10.5px;flex:none;white-space:nowrap}
@@ -1734,6 +1748,11 @@ function paintCard(c, it, u, stale) {
     // Mark only the unusual case: silence when the user is in To:, a faint cc otherwise.
     if (it.recipient_role && it.recipient_role !== 'to') r1.appendChild(el('span', 'kind cc', 'cc'));
   } else if (it.kind === 'mention') r1.appendChild(el('span', 'kind', '@'));
+  if (it.open_items > 0) {
+    const oi = el('span', 'items-chip', it.open_items + (it.open_items === 1 ? ' item' : ' items'));
+    oi.title = 'discrete things in this conversation that still need you';
+    r1.appendChild(oi);
+  }
   const t = el('span', 'ctime', relTime(it.last_activity));
   t.title = it.last_activity ? new Date(tsMs(it.last_activity)).toLocaleString() : '';
   r1.appendChild(t);
@@ -1882,7 +1901,8 @@ function renderThread() {
     d ? d.messages.length : -1, d && d.messages.length ? d.messages[d.messages.length - 1].ts : null,
     a && [a.urgency, a.why, a.summary, a.suggested_action, a.context_notes, a.covered_through_ts, a.analyzed_at],
     state.detailLoading, state.detailError, collapsedSet().has(it.id), Math.floor(Date.now() / 60000),
-    analyzerSig(), state.reanalyze.get(it.id) || null, handoffSig(it.id)]);
+    analyzerSig(), state.reanalyze.get(it.id) || null, handoffSig(it.id),
+    d && (d.items || []).map((i) => [i.id, i.status, i.user_done, i.urgency].join(':')).join(',')]);
   if (threadEl.dataset.sig === sig) return;
   threadEl.dataset.sig = sig;
 
@@ -1975,6 +1995,8 @@ function threadScroll(it, d, a, names) {
   const body = el('div', 'tbody');
 
   body.appendChild(analysisCard(it, d, a));
+  const items = itemsCard(it, d);
+  if (items) body.appendChild(items);
   const handoff = handoffCard(it);
   if (handoff) body.appendChild(handoff);
 
@@ -2044,6 +2066,58 @@ function threadScroll(it, d, a, names) {
 
   scroll.appendChild(body);
   return scroll;
+}
+
+/**
+ * The thread's item checklist — the discrete obligations the analyzer extracted.
+ * Nothing renders until the analyzer has produced at least one item, so old threads
+ * and email rows (no items in v1) look exactly as before.
+ */
+function itemsCard(it, d) {
+  const items = (d && d.items) || [];
+  if (!items.length) return null;
+
+  const card = el('div', 'itemscard');
+  const open = items.filter((i) => i.status === 'open' || i.status === 'waiting').length;
+  card.appendChild(el('div', 'hotitle', 'Items' + (open ? ' · ' + open + ' open' : ' · all settled')));
+
+  items.forEach((item) => {
+    const row = el('label', 'itemrow' + (item.status === 'done' ? ' done' : ''));
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = item.status === 'done';
+    box.addEventListener('change', async () => {
+      box.disabled = true;
+      try {
+        const resp = await api('/api/thread/' + it.id + '/item/' + item.id, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ done: box.checked }),
+        });
+        if (state.detail && state.cursor === it.id) {
+          state.detail.items = resp.items || [];
+          renderThread();
+        }
+        loadFeed(); // the open-items count on the card just changed
+      } catch (_) {
+        box.checked = !box.checked; // roll back the optimistic tick
+      } finally {
+        box.disabled = false;
+      }
+    });
+    row.appendChild(box);
+    if (item.urgency && item.status !== 'done' && item.status !== 'fyi') {
+      row.appendChild(el('span', 'chip c' + item.urgency.charAt(1), item.urgency));
+    }
+    const title = el('span', 'ititle', item.title);
+    if (item.why) title.title = item.why;
+    row.appendChild(title);
+    if (item.status === 'waiting') row.appendChild(el('span', 'itag', 'waiting on them'));
+    if (item.status === 'fyi') row.appendChild(el('span', 'itag', 'FYI'));
+    if (item.due) row.appendChild(el('span', 'itag due', 'due ' + item.due));
+    card.appendChild(row);
+  });
+  return card;
 }
 
 /**

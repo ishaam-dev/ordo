@@ -10,8 +10,11 @@ import {
   getThreadById,
   getMessagesForThread,
   getAnalysisForThread,
+  getItemById,
   getSlackUserNames,
+  listItemsForThread,
   mentionedUserIds,
+  setItemDone,
   setThreadStatus,
 } from './db.js';
 import { workspaceLabels } from './config.js';
@@ -429,6 +432,7 @@ export function startServer(port: number): Promise<void> {
         messages,
         names: getSlackUserNames(thread.workspace, mentioned),
         analysis: getAnalysisForThread(id) ?? null,
+        items: listItemsForThread(id),
       });
     } catch (err) {
       console.error('[server] /api/thread failed:', err);
@@ -465,6 +469,36 @@ export function startServer(port: number): Promise<void> {
    * the front of the analyzer queue. It does NOT run the analysis inline — the analyzer
    * stays strictly one-at-a-time, so this only ever enqueues.
    */
+  /**
+   * The user's own checkbox on one item. Done pins it done (the analyzer may not
+   * reopen it); unticking reopens it. Never a model-reachable path.
+   */
+  app.post('/api/thread/:id/item/:itemId', (req, res) => {
+    const id = Number(req.params.id);
+    const itemId = Number(req.params.itemId);
+    if (!Number.isInteger(id) || id <= 0 || !Number.isInteger(itemId) || itemId <= 0) {
+      res.status(400).json({ error: 'invalid id' });
+      return;
+    }
+    const body = (req.body ?? {}) as { done?: unknown };
+    if (typeof body.done !== 'boolean') {
+      res.status(400).json({ error: 'done must be a boolean' });
+      return;
+    }
+    try {
+      const item = getItemById(itemId);
+      if (!item || item.thread_id !== id) {
+        res.status(404).json({ error: 'item not found' });
+        return;
+      }
+      setItemDone(itemId, body.done);
+      res.json({ ok: true, items: listItemsForThread(id) });
+    } catch (err) {
+      console.error('[server] item toggle failed:', err);
+      res.status(500).json({ error: 'internal error' });
+    }
+  });
+
   app.post('/api/thread/:id/reanalyze', (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) {

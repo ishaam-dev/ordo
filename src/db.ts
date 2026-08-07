@@ -185,6 +185,33 @@ addColumnIfMissing('threads', 'source', "TEXT NOT NULL DEFAULT 'slack'");
 addColumnIfMissing('threads', 'subject', 'TEXT');
 addColumnIfMissing('threads', 'recipient_role', 'TEXT');
 
+/*
+ * Discrete obligations inside a thread (see the items section further down for the
+ * rules). Created here, ahead of the first prepared statement that references it.
+ * No CHECK on status — threads.kind taught us a CHECK cannot be widened later.
+ */
+backupBeforeNewTable('items');
+db.exec(`
+  CREATE TABLE IF NOT EXISTS items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id INTEGER NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+    slug TEXT NOT NULL,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    urgency TEXT,
+    why TEXT,
+    due TEXT,
+    anchor_ts TEXT,
+    user_done INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT,
+    updated_at TEXT,
+    UNIQUE(thread_id, slug)
+  );
+  CREATE INDEX IF NOT EXISTS items_thread_idx ON items(thread_id, status);
+`);
+
+
+
 // ---------- row shapes ----------
 
 export interface ThreadRow {
@@ -289,6 +316,8 @@ export interface FeedItem {
   source: string;
   subject: string | null;
   recipient_role: string | null;
+  /** Open/waiting items the analyzer maintains for this thread (0 = none extracted). */
+  open_items: number;
 }
 
 /** A conversation we already track, for the cheap incremental catch-up sweep. */
@@ -372,7 +401,9 @@ const stmtFeed = db.prepare(
      t.source, t.subject, t.recipient_role,
      a.urgency, a.why, a.summary, a.suggested_action,
      lm.author_id AS last_author_id, lm.author_name AS last_author_name, lm.text AS last_text, lm.ts AS last_ts,
-     (SELECT COUNT(*) FROM messages mc WHERE mc.thread_id = t.id) AS message_count
+     (SELECT COUNT(*) FROM messages mc WHERE mc.thread_id = t.id) AS message_count,
+     (SELECT COUNT(*) FROM items i WHERE i.thread_id = t.id
+        AND i.status IN ('open','waiting') AND i.user_done = 0) AS open_items
    FROM threads t
    LEFT JOIN analyses a ON a.thread_id = t.id
    LEFT JOIN messages lm ON lm.id = (
@@ -599,6 +630,7 @@ export function getFeed(): FeedItem[] {
     source: (r.source as string | null) ?? 'slack',
     subject: (r.subject as string | null) ?? null,
     recipient_role: (r.recipient_role as string | null) ?? null,
+    open_items: Number(r.open_items ?? 0),
   }));
 }
 
@@ -773,6 +805,151 @@ const stmtInsertEmailThread = db.prepare(
    VALUES (?, ?, ?, ?, ?, ?, 'new', ?, ?, 'gmail', ?, ?)
    ON CONFLICT(workspace, channel_id, thread_ts) DO NOTHING`,
 );
+
+// ---------- items: the discrete obligations inside a thread ----------
+
+/*
+ * A busy conversation multiplexes several small workstreams; the unit the user acts on
+ * is the ITEM ("revise the memo", "confirm the Checkr charges"), extracted and
+ * maintained by the analyzer. Identity is (thread_id, slug): the model mints a slug
+ * once and updates it by name on later runs — the prompt is shown the existing slugs.
+ * Deliberately NO CHECK constraint on status: threads.kind taught us a CHECK cannot be
+ * widened without a forbidden table rebuild. Validation lives in reconcileItems().
+ * (The table itself is created up top, before the first prepared statement that
+ * references it — getFeed counts open items.)
+ */
+export interface ItemRow {
+  id: number;
+  thread_id: number;
+  slug: string;
+  title: string;
+  status: string;
+  urgency: string | null;
+  why: string | null;
+  due: string | null;
+  anchor_ts: string | null;
+  user_done: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export const ITEM_STATUSES = ['open', 'waiting', 'done', 'fyi'] as const;
+
+/** What the analyzer hands back per item, already shape-checked by parseAnalysis. */
+export interface AnalyzedItem {
+  slug: string;
+  title: string;
+  status: (typeof ITEM_STATUSES)[number];
+  urgency: 'P0' | 'P1' | 'P2' | 'P3' | null;
+  why: string | null;
+  due: string | null;
+  anchorTs: string | null;
+}
+
+const stmtItemsForThread = db.prepare(
+  `SELECT * FROM items WHERE thread_id = ?
+   ORDER BY CASE status WHEN 'open' THEN 0 WHEN 'waiting' THEN 1 WHEN 'fyi' THEN 2 ELSE 3 END,
+            CASE urgency WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 WHEN 'P3' THEN 3 ELSE 4 END,
+            id ASC`,
+);
+const stmtGetItem = db.prepare('SELECT * FROM items WHERE id = ?');
+const stmtInsertItem = db.prepare(
+  `INSERT INTO items (thread_id, slug, title, status, urgency, why, due, anchor_ts, created_at, updated_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+   ON CONFLICT(thread_id, slug) DO NOTHING`,
+);
+const stmtUpdateItem = db.prepare(
+  `UPDATE items SET title = ?, status = ?, urgency = ?, why = ?, due = ?,
+          anchor_ts = COALESCE(?, anchor_ts), updated_at = ?
+    WHERE thread_id = ? AND slug = ?`,
+);
+const stmtSetItemDone = db.prepare(
+  'UPDATE items SET user_done = ?, status = ?, updated_at = ? WHERE id = ?',
+);
+
+export function listItemsForThread(threadId: number): ItemRow[] {
+  return stmtItemsForThread.all(threadId) as unknown as ItemRow[];
+}
+
+export function getItemById(id: number): ItemRow | undefined {
+  return stmtGetItem.get(id) as ItemRow | undefined;
+}
+
+const ITEM_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,47}$/;
+/** Open+waiting cap per thread — an extractor gone verbose must not flood the feed. */
+const MAX_OPEN_ITEMS = 12;
+
+/**
+ * Fold one analysis run's items into the stored set. Update-by-slug; unknown slugs
+ * insert (within the cap); items the run does not mention are left exactly as they
+ * are; and a user's own "done" always wins — the model may agree an item is done,
+ * but only the thread showing NEW evidence reopens one the user closed (and even
+ * then we keep the user's word: it stays done until they untick it).
+ */
+export function reconcileItems(
+  threadId: number,
+  incoming: AnalyzedItem[],
+): { added: number; updated: number; skipped: number } {
+  const out = { added: 0, updated: 0, skipped: 0 };
+  const existing = new Map(listItemsForThread(threadId).map((i) => [i.slug, i]));
+  let openCount = [...existing.values()].filter(
+    (i) => (i.status === 'open' || i.status === 'waiting') && i.user_done === 0,
+  ).length;
+  const now = new Date().toISOString();
+
+  for (const item of incoming) {
+    const slug = String(item.slug ?? '').trim().toLowerCase();
+    if (!ITEM_SLUG_RE.test(slug) || !ITEM_STATUSES.includes(item.status)) {
+      out.skipped += 1;
+      continue;
+    }
+    const prev = existing.get(slug);
+    if (prev !== undefined) {
+      if (prev.user_done === 1 && item.status !== 'done') {
+        out.skipped += 1; // the user closed it; the model does not reopen it
+        continue;
+      }
+      stmtUpdateItem.run(
+        item.title,
+        item.status,
+        item.urgency,
+        item.why,
+        item.due,
+        item.anchorTs,
+        now,
+        threadId,
+        slug,
+      );
+      out.updated += 1;
+    } else {
+      const isOpen = item.status === 'open' || item.status === 'waiting';
+      if (isOpen && openCount >= MAX_OPEN_ITEMS) {
+        out.skipped += 1;
+        continue;
+      }
+      stmtInsertItem.run(
+        threadId,
+        slug,
+        item.title,
+        item.status,
+        item.urgency,
+        item.why,
+        item.due,
+        item.anchorTs,
+        now,
+        now,
+      );
+      if (isOpen) openCount += 1;
+      out.added += 1;
+    }
+  }
+  return out;
+}
+
+/** The user's own checkbox. Done pins the item done; unticking reopens it. */
+export function setItemDone(id: number, done: boolean): void {
+  stmtSetItemDone.run(done ? 1 : 0, done ? 'done' : 'open', new Date().toISOString(), id);
+}
 
 /** Same DO-NOTHING-then-reread shape as insertThread, for the same two-writer reason. */
 export function insertEmailThread(t: {

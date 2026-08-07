@@ -186,6 +186,7 @@ test('parseAnalysis: maps snake_case JSON onto camelCase fields', () => {
     summary: 's',
     suggestedAction: 'a',
     contextNotes: '- [calendar] busy',
+    items: [],
   });
 });
 
@@ -197,6 +198,7 @@ test('parseAnalysis: missing optional fields become empty strings, never undefin
     summary: '',
     suggestedAction: '',
     contextNotes: '',
+    items: [],
   });
 });
 

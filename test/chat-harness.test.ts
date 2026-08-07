@@ -296,6 +296,41 @@ test('chat hands the provider the core gate, and it refuses the send path mid-tu
   assert.equal(fake.requests[0].timeoutMs, 240_000);
 });
 
+test('the item checkbox route toggles done and refuses cross-thread ids', async () => {
+  resetDb();
+  const id = seedThread({ last_activity: '1000.000100' });
+  seedMessage({ thread_id: id, text: 'hello' });
+  const other = seedThread({ last_activity: '1000.000200', channel_id: 'D_OTHER' });
+  db.reconcileItems(id, [
+    { slug: 'revise-memo', title: 'Revise the memo', status: 'open', urgency: 'P1', why: null, due: null, anchorTs: null },
+  ]);
+  const itemRow = db.listItemsForThread(id)[0];
+
+  const ok = await request({
+    path: `/api/thread/${id}/item/${itemRow.id}`,
+    method: 'POST',
+    body: JSON.stringify({ done: true }),
+  });
+  assert.equal(ok.status, 200);
+  const payload = JSON.parse(ok.body) as { items: Array<{ id: number; status: string; user_done: number }> };
+  assert.equal(payload.items[0].status, 'done');
+  assert.equal(payload.items[0].user_done, 1);
+
+  // The same item id under a different thread → 404, not a cross-thread mutation.
+  const cross = await request({
+    path: `/api/thread/${other}/item/${itemRow.id}`,
+    method: 'POST',
+    body: JSON.stringify({ done: false }),
+  });
+  assert.equal(cross.status, 404);
+  assert.equal(db.getItemById(itemRow.id)?.status, 'done', 'untouched by the cross-thread call');
+
+  const thread = await request({ path: `/api/thread/${id}` });
+  const detail = JSON.parse(thread.body) as { items?: unknown[] };
+  assert.equal(Array.isArray(detail.items), true);
+  assert.equal(detail.items?.length, 1);
+});
+
 test('/new resets the conversation; rewind keeps the head and replays it to a fresh session', async () => {
   resetDb();
   const id = seedThread({ last_activity: '1000.000100' });
