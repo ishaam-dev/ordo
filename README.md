@@ -76,10 +76,8 @@ Start by getting it. If the folder this session is open in already contains this
 project (look for manifest.json and a src/ folder with analyzer.ts in it), use it.
 Otherwise clone it: `git clone https://github.com/ishaam-dev/slack-copilot` and
 work inside the folder it creates — tell me where you put it.
-The repository is PRIVATE, so the clone only works if I've been given access to it
-and my machine is signed in to GitHub. If the clone fails with a "not found" or
-"authentication" error, don't guess or try workarounds — tell me plainly that I
-need to be added to the repo, or need to sign in (`gh auth login`), and wait.
+If the clone fails, don't guess or try workarounds — tell me plainly what went
+wrong and wait.
 
 Read README.md, DESIGN.md, .env.example and src/config.ts first so you know what
 the app is and what it needs. Then set it up with me.
