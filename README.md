@@ -11,6 +11,9 @@ list, has Claude read each conversation and say *why* it matters and what it
 thinks you should do, and lets you talk to Claude about any of them and send the
 reply back to Slack with a click.
 
+It can watch your Gmail as well, if you turn that on — new email lands in the same
+list, and the app can only ever read it, never send or delete anything.
+
 Everything runs on your Mac. Your messages are never sent to any server other than
 Slack's and Claude's, and there is no account to make, no cloud to sign up for,
 and no website to visit.
@@ -23,11 +26,13 @@ and no website to visit.
 - [What you need before you start](#what-you-need-before-you-start)
 - [Set it up by hand](#set-it-up-by-hand)
 - [Using it, day to day](#using-it-day-to-day)
+- [Watching your Gmail too](#watching-your-gmail-too)
 - [How it works](#how-it-works)
 - [Privacy](#privacy)
 - [Known limitations](#known-limitations)
 - [When something looks wrong](#when-something-looks-wrong)
 - [Removing it](#removing-it)
+- [Contributing](#contributing)
 
 ---
 
@@ -734,6 +739,26 @@ have already dealt with back in your list.
 
 ---
 
+## Watching your Gmail too
+
+Turned on, Slack Copilot checks your Gmail for new mail every half hour and puts
+anything that arrived into the same list as your Slack conversations, rated the
+same way. Each one links straight to the real thread in Gmail.
+
+- **It's off until you ask for it.** Add `COPILOT_EMAIL=1` to your `.env` and
+  restart. Your assistant needs to be connected to Gmail first — ask the agent
+  that set you up to wire that in.
+- **It can only read.** The app has no way to send, file, or delete an email.
+  When Claude drafts a reply for you, you copy it out and send it from Gmail
+  yourself.
+- **It starts from today.** Turning it on never imports your mailbox history —
+  only mail that arrives after the switch is flipped.
+
+What each check costs and how the reading works is in
+[docs/email-ingest.md](docs/email-ingest.md).
+
+---
+
 ## How it works
 
 One Node process and an Electron shell around it. Slack pushes new messages down a
@@ -967,6 +992,18 @@ Build output lives in `release/` and `electron/assets/` +
 `data.db*`.
 
 </details>
+
+---
+
+## Contributing
+
+The repo is public and contributions are welcome — bugs, ideas, pull requests, or
+just an account of what confused you during setup. Open an issue and say what you
+ran into. [DESIGN.md](DESIGN.md) explains how the code is put together and why;
+the guardrails in [CLAUDE.md](CLAUDE.md) — tokens, logging, and the send path —
+are the part a change can't loosen.
+
+---
 
 ## License
 
