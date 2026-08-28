@@ -307,7 +307,30 @@ STEP 9 — Check it actually works, and don't declare victory early.
     [harness] — they say which workspaces were accepted, which assistant is running,
     and whether it passed the app's own safety check at startup.
 
-STEP 10 — Install it as a proper Mac app (ask me first whether I want this).
+STEP 10 — My email, if I want it. ASK ME.
+  The app can watch my Gmail too: new mail joins the same list, rated the same
+  way, and the app can only ever read it — it has no way to send, file, or
+  delete anything, and it never imports old mail, only what arrives after we
+  switch it on. Ask me whether I want that. If I say no, say it can be added
+  later and go to step 11.
+  If I say yes:
+  a. Gmail has to be connected to the AI assistant itself. On Claude Code that
+     happens in my Claude account, not on this machine, and it is MINE to do:
+     tell me to open claude.ai in my browser, find Settings → Connectors, add
+     Gmail, and approve it in the Google window that appears. STOP and WAIT,
+     then verify with `claude mcp list` — it should list a Gmail entry marked
+     connected. (On Pi or Codex: if the assistant has no Gmail connection of
+     its own, tell me plainly that email isn't available there, and move on.)
+  b. These are settings, not secrets, so YOU add them to .env:
+         COPILOT_EMAIL=1
+         COPILOT_EMAIL_ADDRESS=<my Gmail address — ask me for it>
+     The address line is optional, but with it the list labels mail properly
+     and links land in the right inbox.
+  c. Restart the app and look for a terminal line starting with [email] that
+     says "watching from" — that's email confirmed on. ([email] off means the
+     .env line didn't take.)
+
+STEP 11 — Install it as a proper Mac app (ask me first whether I want this).
   Run `npm run app:build`, then tell me to double-click install.command in the
   project folder. Warn me about the first-launch warning macOS shows for apps it
   hasn't seen before ("unidentified developer") and the fix: Applications folder →
