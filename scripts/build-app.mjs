@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Builds "Slack Copilot.app" into release/mac-arm64/.
+ * Builds "Ordo.app" into release/mac-arm64/.
  *
  * There is no Apple Developer certificate involved, so the finished bundle gets an
  * ad-hoc signature (`codesign --sign -`). That does not make macOS trust the app —
@@ -14,7 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const appPath = path.join(root, 'release', 'mac-arm64', 'Slack Copilot.app');
+const appPath = path.join(root, 'release', 'mac-arm64', 'Ordo.app');
 
 function run(cmd, args, opts = {}) {
   const res = spawnSync(cmd, args, { cwd: root, stdio: 'inherit', ...opts });

@@ -1,4 +1,4 @@
-# Slack Copilot — Architecture
+# Ordo — Architecture
 
 **What it is.** A local app that watches two Slack workspaces for DMs and @-mentions of the
 user, shows them as one feed prioritized by urgency, where each thread is pre-analyzed by an
@@ -372,7 +372,7 @@ An Electron shell around the server — it does not re-implement or import anyth
 (`node --import tsx <projectDir>/src/index.ts --copilot-managed`), so the packaged app always
 runs whatever is currently in `src/` and reads `.env` / `data.db` from the project folder.
 
-- `supervisor.js` probes `127.0.0.1:5252` first. If a Slack Copilot server is already
+- `supervisor.js` probes `127.0.0.1:5252` first. If a Ordo server is already
   answering (someone's `npm run dev`) it **attaches** — never spawns a second one, never
   kills it on quit. A server it started in a previous run is recognised by the
   `--copilot-managed` marker and adopted; a dev server can never match that. Its own child

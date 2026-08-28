@@ -683,7 +683,7 @@ function logFailure(threadId: number, failure: AnalyzerFailure): void {
   if (failure.kind !== lastLoggedKind) {
     lastLoggedKind = failure.kind;
     console.warn(
-      `\n  ==> Slack Copilot: messages are NOT being prioritized right now.\n` +
+      `\n  ==> Ordo: messages are NOT being prioritized right now.\n` +
         `      ${failure.message}\n` +
         `      ${failure.hint}\n` +
         `      (the app window shows this too — GET /api/status, kind "${failure.kind}")\n`,

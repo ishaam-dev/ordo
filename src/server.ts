@@ -257,12 +257,12 @@ function runOsascript(script: string): Promise<void> {
 /** Whatever went wrong, said in words the user can act on. */
 function terminalFailureMessage(detail: string): string {
   if (/-1743|not authori[sz]ed|assistive access/i.test(detail)) {
-    return 'This Mac has not given Slack Copilot permission to open Terminal. Copy the command below and run it yourself, or allow it in System Settings → Privacy & Security → Automation.';
+    return 'This Mac has not given Ordo permission to open Terminal. Copy the command below and run it yourself, or allow it in System Settings → Privacy & Security → Automation.';
   }
   if (/-600|isn.t running|not running/i.test(detail)) {
     return 'The terminal app would not start. Copy the command below and run it yourself.';
   }
-  return 'Slack Copilot could not open a terminal window. Copy the command below and run it yourself.';
+  return 'Ordo could not open a terminal window. Copy the command below and run it yourself.';
 }
 
 export interface TerminalLaunchResult {
@@ -610,7 +610,7 @@ export function startServer(port: number): Promise<void> {
       if (!terminalLaunchAllowed()) {
         res.status(503).json({
           error: 'cannot_launch',
-          message: 'Slack Copilot can only open Terminal from the Mac app.',
+          message: 'Ordo can only open Terminal from the Mac app.',
           command,
         });
         return;

@@ -1,12 +1,12 @@
-# Slack Copilot
+# Ordo
 
-Slack Copilot watches your Slack messages, sorts them by how urgent they are, and
+Ordo watches your Slack messages, sorts them by how urgent they are, and
 tells you which ones actually need you. It runs quietly on your Mac: a small
 speech-bubble icon at the top right of your screen, next to the clock.
 
 It exists because Slack has no idea what matters. Every DM and every `@you` looks
-identical, so you either read everything or you miss the one that mattered. Slack
-Copilot collects your DMs and mentions from one or two workspaces into a single
+identical, so you either read everything or you miss the one that mattered. Ordo
+collects your DMs and mentions from one or two workspaces into a single
 list, has Claude read each conversation and say *why* it matters and what it
 thinks you should do, and lets you talk to Claude about any of them and send the
 reply back to Slack with a click.
@@ -65,7 +65,7 @@ questions — it does everything else. Say yes when it asks permission to run co
 or edit files; it can't do the setup otherwise.
 
 ````text
-You are setting up an app called "Slack Copilot" on my Mac.
+You are setting up an app called "Ordo" on my Mac.
 
 The finished app runs an AI assistant of my choosing — that is what reads and rates
 my Slack conversations. Claude Code is the default and the one to use unless I say
@@ -75,11 +75,11 @@ Whichever I choose is the same assistant that has to be installed and signed in 
 this Mac when we finish — so being signed in matters twice over: for you now, and
 for the app afterwards.
 
-The code lives at https://github.com/ishaam-dev/slack-copilot
+The code lives at https://github.com/ishaam-dev/ordo
 
 Start by getting it. If the folder this session is open in already contains this
 project (look for manifest.json and a src/ folder with analyzer.ts in it), use it.
-Otherwise clone it: `git clone https://github.com/ishaam-dev/slack-copilot` and
+Otherwise clone it: `git clone https://github.com/ishaam-dev/ordo` and
 work inside the folder it creates — tell me where you put it.
 If the clone fails, don't guess or try workarounds — tell me plainly what went
 wrong and wait.
@@ -334,7 +334,7 @@ STEP 11 — Install it as a proper Mac app (ask me first whether I want this).
   Run `npm run app:build`, then tell me to double-click install.command in the
   project folder. Warn me about the first-launch warning macOS shows for apps it
   hasn't seen before ("unidentified developer") and the fix: Applications folder →
-  Control-click "Slack Copilot" → Open → Open. Note the project folder must stay
+  Control-click "Ordo" → Open → Open. Note the project folder must stay
   where it is — the app reads .env and the database from it.
 
 FINALLY
@@ -352,7 +352,7 @@ that case tell it so at the start, and it will adapt.
 
 ### Using a different AI agent
 
-Slack Copilot runs on **Claude Code** unless you tell it otherwise. To use something
+Ordo runs on **Claude Code** unless you tell it otherwise. To use something
 else, add one line to the `.env` file in the project folder:
 
 ```
@@ -406,7 +406,7 @@ by hand.
 |---|---|
 | **A Mac** | Apple Silicon (M1 or later). The packaged app is built for `mac-arm64` only. |
 | **Node 22 or newer** | `brew install node`. Homebrew puts it in `/opt/homebrew/bin`, which is not always on the PATH of a non-login shell — if `node -v` says "command not found" in some window, that is why. |
-| **An AI assistant, signed in** | **Claude Code** unless you choose otherwise: install it, then run `claude auth login` (`claude auth status` should say `"loggedIn": true`). Slack Copilot runs it through *your* own login — there is no API key anywhere in this project, and you are never asked for one. Expect it to use your Claude plan's allowance: every conversation gets read, and if you hit a usage limit the app says so and resumes when it resets. Pi and Codex work too, with real trade-offs — see [Using a different AI agent](#using-a-different-ai-agent). |
+| **An AI assistant, signed in** | **Claude Code** unless you choose otherwise: install it, then run `claude auth login` (`claude auth status` should say `"loggedIn": true`). Ordo runs it through *your* own login — there is no API key anywhere in this project, and you are never asked for one. Expect it to use your Claude plan's allowance: every conversation gets read, and if you hit a usage limit the app says so and resumes when it resets. Pi and Codex work too, with real trade-offs — see [Using a different AI agent](#using-a-different-ai-agent). |
 | **One or two Slack workspaces** | The app has two slots, **A** and **B**. Fill in one if you only have one workspace, both if you have two. There is no slot C. |
 | **Permission to install an app in those workspaces** | ⚠️ **This is the blocker.** Many companies require an admin to approve every new Slack app. If yours does, the install step will offer you a **"Request to Install"** button instead of installing, and nothing works until a Slack admin approves it. Find out now, before you do the rest of the work: ask your Slack admin, or look at **Settings & administration → Manage apps** in Slack and see whether it says app approval is required. |
 
@@ -494,7 +494,7 @@ needs it.
 
 ```bash
 git clone <this repo>
-cd slack-copilot
+cd ordo
 npm install
 ```
 
@@ -626,16 +626,16 @@ Keep the project folder where it is — the app reads `.env` and the database fr
 **The first time you open it, macOS may warn you.** Because the app is built locally
 rather than bought from the App Store, you may see:
 
-> **"Slack Copilot" cannot be opened because it is from an unidentified developer.**
+> **"Ordo" cannot be opened because it is from an unidentified developer.**
 
 That's expected. Once, and only once:
 
 1. Dismiss the box.
 2. Open **Applications** (Finder → Go → Applications).
-3. Hold **Control** and click **Slack Copilot**.
+3. Hold **Control** and click **Ordo**.
 4. Choose **Open**, then **Open** again in the box that appears.
 
-If instead you see **Open System Settings**, click it, scroll to *"Slack Copilot"
+If instead you see **Open System Settings**, click it, scroll to *"Ordo"
 was blocked*, and click **Open Anyway**.
 
 ---
@@ -653,7 +653,7 @@ was blocked*, and click **Open Anyway**.
 
 **Click the bubble** — with either mouse button — and a short menu appears:
 
-- **Open Slack Copilot** is the first item, so opening the window is one more click.
+- **Open Ordo** is the first item, so opening the window is one more click.
 - Underneath it, in plain words: how things are going, and how many urgent
   messages are waiting.
 - Below that: close the app, restart it, stop it starting automatically, or find
@@ -661,7 +661,7 @@ was blocked*, and click **Open Anyway**.
 
 **Closing the window does not switch it off.** It keeps watching in the
 background — that is the point. To switch it off completely, click the bubble
-and choose **Quit Slack Copilot**.
+and choose **Quit Ordo**.
 
 ### The list
 
@@ -709,7 +709,7 @@ that isn't a setting, it's how the app is built.
 ### Notifications
 
 When a genuinely urgent message arrives, your Mac shows a notification in the
-corner of the screen. Click it and Slack Copilot opens straight to that message.
+corner of the screen. Click it and Ordo opens straight to that message.
 
 It is deliberately quiet:
 
@@ -721,14 +721,14 @@ It is deliberately quiet:
 - Every conversation that already existed the first time it ran is adopted in
   silence, even if Claude only decides later that one of them was urgent.
 
-If you are not seeing notifications, open the Slack Copilot window, then from the
-menu at the very top of the screen choose **Slack Copilot → Send a test
+If you are not seeing notifications, open the Ordo window, then from the
+menu at the very top of the screen choose **Ordo → Send a test
 notification**. If nothing appears, macOS is blocking them: open System Settings →
-Notifications → Slack Copilot and switch **Allow notifications** on.
+Notifications → Ordo and switch **Allow notifications** on.
 
 ### What "unread" means here, and the first day
 
-The blue dot means **arrived since Slack Copilot has been watching your Slack** —
+The blue dot means **arrived since Ordo has been watching your Slack** —
 not "unread in Slack".
 
 The first time it runs it collects the last couple of days of messages so nothing is
@@ -746,7 +746,7 @@ knows the difference between the two:
 
 ### If someone edits or deletes a message
 
-Slack Copilot follows along. If someone changes what they wrote, the wording here
+Ordo follows along. If someone changes what they wrote, the wording here
 changes too, and Claude reads it again and updates its summary. If someone deletes
 a message, it stops showing what it said. Neither of these puts a conversation you
 have already dealt with back in your list.
@@ -764,7 +764,7 @@ have already dealt with back in your list.
 
 ## Watching your Gmail too
 
-Turned on, Slack Copilot checks your Gmail for new mail every half hour and puts
+Turned on, Ordo checks your Gmail for new mail every half hour and puts
 anything that arrived into the same list as your Slack conversations, rated the
 same way. Each one links straight to the real thread in Gmail.
 
@@ -824,7 +824,7 @@ Everything stays on your Mac.
   rejects requests with any other `Host`, and requires a token minted fresh each run.
   Nothing about it is on the internet and nobody else can open it.
 - **Logs never contain message text, draft text or tokens** — they're written to be
-  safe to send to someone when you need help (Library → Logs → Slack Copilot).
+  safe to send to someone when you need help (Library → Logs → Ordo).
 
 ---
 
@@ -852,7 +852,7 @@ Everything stays on your Mac.
 
 ## When something looks wrong
 
-Slack Copilot tells you rather than failing quietly. Click the speech bubble and
+Ordo tells you rather than failing quietly. Click the speech bubble and
 read the first line of the menu.
 
 | It says | What is happening | What to do |
@@ -860,13 +860,13 @@ read the first line of the menu.
 | Connected to *(your workspaces)* | All good. | Nothing. |
 | Starting up… | It is waking up. | Wait a few seconds. |
 | Disconnected from Slack — retrying | Slack or your internet dropped. | It reconnects on its own. If it stays like this, check your internet. |
-| Not running — retrying… | The background part stopped and is being restarted. | Wait. If it does not clear, choose **Restart Slack Copilot**. |
+| Not running — retrying… | The background part stopped and is being restarted. | Wait. If it does not clear, choose **Restart Ordo**. |
 | Slack is not set up yet | Your Slack sign-in details are missing. | Check `.env` has all four values and none of them still say `...`. |
 | Can't sign in to Slack | Your Slack sign-in details have expired or been revoked. | Redo steps 6–7 of the manual setup for that workspace: fresh tokens, into `.env`. |
 | Something else is using the connection this app needs | Another program has taken the door it uses. | Restart your Mac. |
-| Slack Copilot can't find its files | The Slack Copilot folder was moved or renamed. | Open the folder and double-click **install.command** again. |
+| Ordo can't find its files | The Ordo folder was moved or renamed. | Open the folder and double-click **install.command** again. |
 
-Inside the Slack Copilot window, the top right corner shows one line per Slack
+Inside the Ordo window, the top right corner shows one line per Slack
 workspace with a coloured dot: green when it is connected, amber while it is
 reconnecting, red when it cannot get in. Hover over a line to read why. If Slack
 drops out, that dot changes — the app does not just go quiet on you.
@@ -898,11 +898,11 @@ activity log** — a Finder window opens with the files they will ask for.
 
 ## Removing it
 
-Double-click **uninstall.command** in the Slack Copilot folder, type `remove`
+Double-click **uninstall.command** in the Ordo folder, type `remove`
 when it asks, and press Return.
 
 That removes the app and stops it starting automatically. It does **not** delete
-the Slack Copilot folder, your Slack sign-in details, or the messages it has
+the Ordo folder, your Slack sign-in details, or the messages it has
 already collected — so you can put it back later by running **install.command**
 again.
 
@@ -921,7 +921,7 @@ To detach it from Slack as well, uninstall the app from each workspace
 npm run dev          # tsx watch src/index.ts — serves http://127.0.0.1:5252
 npm start            # same, no watch
 npm run typecheck    # tsc --noEmit (no build step; tsx runs the TypeScript directly)
-npm run app:build    # builds release/mac-arm64/Slack Copilot.app (ad-hoc signed)
+npm run app:build    # builds release/mac-arm64/Ordo.app (ad-hoc signed)
 npm run app:dev      # runs the Electron shell from source, without packaging
 npm run app:icons    # regenerates assets/ from code (no binary assets in git)
 npm run harness:probe   # checks each AI assistant's read-only claim on this Mac
@@ -967,13 +967,13 @@ and `data.db` from the project directory, and can never drift from the dev setup
   documented at length in `src/db.ts`; it is applied by the `ingest` callback in
   `src/ingest.ts`. An existing database is tidied up once on startup
   (`markPreWatchThreadsSeen`, guarded by a marker row, `VACUUM INTO` backup first).
-- **Menu bar.** Both mouse buttons open the same menu; `Open Slack Copilot` is the
+- **Menu bar.** Both mouse buttons open the same menu; `Open Ordo` is the
   first item. Nothing about the app's state is reachable only by right-clicking.
 - **Slack connection state** comes from `GET /api/status`, which `src/ingest.ts`
   feeds from the Socket-Mode lifecycle events. The app reads it on each feed poll,
   which is why the menu can say `Connected to <teams>` even when it attached to a
   server it did not start (and therefore cannot read that server's log).
-- **Port sharing.** On startup the app probes `127.0.0.1:5252`. If a Slack Copilot
+- **Port sharing.** On startup the app probes `127.0.0.1:5252`. If a Ordo
   server is already answering (e.g. someone's `npm run dev`), it *attaches* to it,
   never spawns a second one, and never kills it on quit. If nothing is there it
   starts and supervises its own, restarting with backoff (1s → 60s) on exit. A

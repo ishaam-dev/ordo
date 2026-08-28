@@ -28,7 +28,7 @@ for (const file of readdirSync(assets)) {
   if (/\.(png|icns)$/i.test(file)) cpSync(path.join(assets, file), path.join(appAssets, file));
 }
 
-const port = Number(process.env.SLACK_COPILOT_PORT) || 5252;
+const port = Number(process.env.ORDO_PORT) || 5252;
 writeFileSync(
   path.join(root, 'electron', 'project-path.json'),
   JSON.stringify({ projectDir: root, port, generatedAt: new Date().toISOString() }, null, 2) + '\n',

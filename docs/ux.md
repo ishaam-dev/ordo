@@ -1,4 +1,4 @@
-# Slack Copilot — UX Spec (v1)
+# Ordo — UX Spec (v1)
 
 Companion to `DESIGN.md`. Scope: the localhost UI only. Audience: the one developer building it; the one user using it (a wide desktop browser, all day, mostly peripheral vision + keyboard). Style targets: dark only, information-dense, scannable in under a second per card, no design-system machinery.
 
@@ -289,13 +289,13 @@ Errors are ambient here, modal nowhere.
 The tab is the in-window notification surface. *(Desktop notifications were out of scope when this was written; the Mac app now has them — same counting rule, P0/P1 and still-unread only. See `DESIGN.md` §8.)*
 
 - **Counted**: unseen threads at **P0 or P1 only**. Total unread would make the badge permanent and meaningless.
-- **Title**: `(3!) Slack Copilot` — the `!` present iff ≥1 unseen P0; `(3) Slack Copilot` for P1-only; plain `Slack Copilot` otherwise.
+- **Title**: `(3!) Ordo` — the `!` present iff ≥1 unseen P0; `(3) Ordo` for P1-only; plain `Ordo` otherwise.
 - **Favicon**: drawn to a 32px canvas — base glyph + top-right dot, `--p0` red if any unseen P0, else `--p1` orange. Cleared as soon as those threads are seen or done (another reason `j`/`k` must not mark seen).
 - Recompute on every store change, throttled to 1s.
 
 ### The menubar, when the UI runs inside the Mac app
 
-Outside this spec's scope but adjacent to it, and the spec-era assumption was wrong: **it is not right-click-only.** Both mouse buttons open the same menu, and **"Open Slack Copilot" is its first item** — so the old left-click-to-open habit still reaches the window in one more click, and the status lines sit directly under it. Nothing about the app's state is reachable only by right-clicking: when something was wrong, an odd-looking icon with no discoverable way to ask why was the entire failure mode. Icon: filled = healthy, hollow = starting, crossed with a `!` = broken; the urgent count rides next to it as the title.
+Outside this spec's scope but adjacent to it, and the spec-era assumption was wrong: **it is not right-click-only.** Both mouse buttons open the same menu, and **"Open Ordo" is its first item** — so the old left-click-to-open habit still reaches the window in one more click, and the status lines sit directly under it. Nothing about the app's state is reachable only by right-clicking: when something was wrong, an odd-looking icon with no discoverable way to ask why was the entire failure mode. Icon: filled = healthy, hollow = starting, crossed with a `!` = broken; the urgent count rides next to it as the title.
 
 ---
 

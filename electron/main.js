@@ -1,8 +1,8 @@
 'use strict';
 /**
- * Slack Copilot for macOS.
+ * Ordo for macOS.
  *
- * A menubar app that keeps the Slack Copilot server running in the background,
+ * A menubar app that keeps the Ordo server running in the background,
  * shows the existing web UI in a real window, and raises a macOS notification
  * when something urgent arrives.
  *
@@ -31,7 +31,7 @@ const path = require('node:path');
 
 // Set before anything asks for a path, so settings and logs land in the same place
 // whether the app is packaged or being run from source during development.
-app.setName('Slack Copilot');
+app.setName('Ordo');
 
 const { baseUrl, config, log, logDir, readJson, userDataFile, writeJson } = require('./env');
 const { Supervisor } = require('./supervisor');
@@ -148,7 +148,7 @@ function main() {
 
   function createWindow() {
     win = new BrowserWindow({
-      title: 'Slack Copilot',
+      title: 'Ordo',
       width: 1180,
       height: 840,
       minWidth: 680,
@@ -296,7 +296,7 @@ function main() {
    * It used to be: left-click opens the window, right-click shows the status menu. Nobody
    * who has not been told about the right-click will ever find it — so when something was
    * wrong, all the app offered was an odd-looking icon and no way to ask why. Everything
-   * that matters is now one ordinary click away, and "Open Slack Copilot" is the first item
+   * that matters is now one ordinary click away, and "Open Ordo" is the first item
    * in the menu, so the old habit still lands on the window in one more click.
    */
   function createTray() {
@@ -345,7 +345,7 @@ function main() {
     const s = supervisor.status();
     switch (s.server) {
       case 'misconfigured':
-        return s.problem || "Slack Copilot can't find its files";
+        return s.problem || "Ordo can't find its files";
       case 'conflict':
         return 'Something else is using the connection this app needs';
       case 'starting':
@@ -397,7 +397,7 @@ function main() {
     else if (counts.urgent > 0) title = ` ${counts.urgent}`;
     tray.setTitle(title, { fontType: 'monospacedDigit' });
 
-    tray.setToolTip(`Slack Copilot — ${healthLine()}\nClick for how things are going, and to open it`);
+    tray.setToolTip(`Ordo — ${healthLine()}\nClick for how things are going, and to open it`);
 
     if (app.dock) app.dock.setBadge(counts.urgent > 0 ? String(counts.urgent) : '');
 
@@ -416,7 +416,7 @@ function main() {
 
   function buildTrayMenu() {
     const s = supervisor.status();
-    // "Open Slack Copilot" is deliberately first: it is what almost every click is for, it
+    // "Open Ordo" is deliberately first: it is what almost every click is for, it
     // is the item under the cursor when the menu appears, and it means a left-click still
     // reaches the window without the user having to read anything. The two status lines sit
     // directly under it so the answer to "is this thing working?" is never hidden.
@@ -428,7 +428,7 @@ function main() {
       status.push({ label: 'Using the copy already running on this Mac', enabled: false });
     }
     const items = [
-      { label: 'Open Slack Copilot', click: () => showWindow() },
+      { label: 'Open Ordo', click: () => showWindow() },
       { type: 'separator' },
       ...status,
       { type: 'separator' },
@@ -439,7 +439,7 @@ function main() {
         click: (item) => setLoginItem(item.checked),
       },
       {
-        label: 'Restart Slack Copilot',
+        label: 'Restart Ordo',
         enabled: s.owner !== 'external',
         click: () => {
           supervisor.restart();
@@ -449,7 +449,7 @@ function main() {
       },
       { label: 'Show the activity log', click: () => shell.openPath(logDir()) },
       { type: 'separator' },
-      { label: 'Quit Slack Copilot', accelerator: 'Command+Q', click: () => app.quit() },
+      { label: 'Quit Ordo', accelerator: 'Command+Q', click: () => app.quit() },
     ];
     return Menu.buildFromTemplate(items);
   }
@@ -465,9 +465,9 @@ function main() {
       return;
     }
     const n = new Notification({
-      title: 'Slack Copilot notifications are working',
+      title: 'Ordo notifications are working',
       subtitle: 'Test message',
-      body: 'This is what an urgent Slack message will look like. Click it to open Slack Copilot.',
+      body: 'This is what an urgent Slack message will look like. Click it to open Ordo.',
     });
     n.on('show', () => log('test notification: shown by macOS'));
     n.on('failed', (_e, err) => log('test notification failed:', String(err)));
@@ -535,14 +535,14 @@ function main() {
   function buildAppMenu() {
     return Menu.buildFromTemplate([
       {
-        label: 'Slack Copilot',
+        label: 'Ordo',
         submenu: [
           { role: 'about' },
           { type: 'separator' },
           { label: 'Send a test notification', click: () => testNotification() },
           { label: 'Show the activity log', click: () => shell.openPath(logDir()) },
           {
-            label: 'Restart Slack Copilot',
+            label: 'Restart Ordo',
             click: () => {
               supervisor.restart();
               watcher.forgetToken();
@@ -553,7 +553,7 @@ function main() {
           { role: 'hide' },
           { role: 'hideOthers' },
           { type: 'separator' },
-          { label: 'Quit Slack Copilot', accelerator: 'Command+Q', click: () => app.quit() },
+          { label: 'Quit Ordo', accelerator: 'Command+Q', click: () => app.quit() },
         ],
       },
       {
@@ -588,7 +588,7 @@ function main() {
 
   app.whenReady().then(() => {
     const cfg = config();
-    log(`--- Slack Copilot starting (packaged: ${app.isPackaged}) ---`);
+    log(`--- Ordo starting (packaged: ${app.isPackaged}) ---`);
     log(`project folder: ${cfg.projectDir || 'NOT FOUND'}`);
     log(`window address: ${baseUrl()}`);
 
@@ -603,7 +603,7 @@ function main() {
     );
 
     app.setAboutPanelOptions({
-      applicationName: 'Slack Copilot',
+      applicationName: 'Ordo',
       applicationVersion: app.getVersion(),
       credits: 'Your Slack messages, sorted by what matters.',
     });
@@ -683,7 +683,7 @@ function main() {
 
     if (!app.getLoginItemSettings().wasOpenedAtLogin) showWindow();
 
-    // Support-only: `Slack Copilot --test-notification` proves the notification
+    // Support-only: `Ordo --test-notification` proves the notification
     // path end-to-end without waiting for a real urgent message.
     if (process.argv.includes('--test-notification')) setTimeout(testNotification, 2500);
   });

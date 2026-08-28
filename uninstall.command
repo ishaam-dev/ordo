@@ -1,14 +1,14 @@
 #!/bin/zsh
-# Double-click this file to remove Slack Copilot from this Mac.
+# Double-click this file to remove Ordo from this Mac.
 #
 # It removes the app itself and stops it starting automatically. It does NOT
-# touch the Slack Copilot folder, your Slack sign-in details, or your saved
+# touch the Ordo folder, your Slack sign-in details, or your saved
 # messages - those stay exactly where they are.
 
 set -u
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
-APP_NAME="Slack Copilot"
+APP_NAME="Ordo"
 INSTALLED_APP="/Applications/$APP_NAME.app"
 SUPPORT_DIR="$HOME/Library/Application Support/$APP_NAME"
 LOG_DIR="$HOME/Library/Logs/$APP_NAME"
@@ -18,16 +18,16 @@ line() { say "------------------------------------------------------------"; }
 
 clear 2>/dev/null || true
 line
-say "  Removing Slack Copilot"
+say "  Removing Ordo"
 line
 say ""
 say "This will:"
-say "  - close Slack Copilot"
+say "  - close Ordo"
 say "  - stop it starting automatically when you log in"
 say "  - remove it from your Applications folder"
 say ""
 say "This will NOT remove:"
-say "  - the Slack Copilot folder on your Mac"
+say "  - the Ordo folder on your Mac"
 say "  - your Slack sign-in details"
 say "  - the messages it has already collected"
 say ""
@@ -55,7 +55,7 @@ if [[ -x "$INSTALLED_APP/Contents/MacOS/$APP_NAME" ]]; then
 fi
 
 # 2. Close it -----------------------------------------------------------------
-say "Closing Slack Copilot..."
+say "Closing Ordo..."
 osascript -e "tell application \"$APP_NAME\" to quit" > /dev/null 2>&1
 sleep 2
 pkill -f "$INSTALLED_APP/Contents/MacOS/" > /dev/null 2>&1
@@ -72,12 +72,12 @@ rm -rf "$LOG_DIR"
 say ""
 line
 if [[ -d "$INSTALLED_APP" ]]; then
-  say "  Slack Copilot could not be removed automatically."
-  say "  Open your Applications folder and drag \"Slack Copilot\" to the Bin."
+  say "  Ordo could not be removed automatically."
+  say "  Open your Applications folder and drag \"Ordo\" to the Bin."
 else
-  say "  Done. Slack Copilot has been removed."
+  say "  Done. Ordo has been removed."
   say ""
-  say "  The Slack Copilot folder is still on your Mac. To put the app back,"
+  say "  The Ordo folder is still on your Mac. To put the app back,"
   say "  open that folder and double-click the file called install.command."
 fi
 line

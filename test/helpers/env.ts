@@ -17,7 +17,7 @@ import path from 'node:path';
 // Set before anything constructs a Date.
 process.env.TZ = 'UTC';
 
-export const TMP_DIR: string = mkdtempSync(path.join(os.tmpdir(), 'slack-copilot-test-'));
+export const TMP_DIR: string = mkdtempSync(path.join(os.tmpdir(), 'ordo-test-'));
 export const TEST_DB_PATH: string = path.join(TMP_DIR, 'test.db');
 
 // src/db.ts: `COPILOT_DB_PATH` overrides the live `data.db`.

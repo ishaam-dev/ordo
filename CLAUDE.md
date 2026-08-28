@@ -1,4 +1,4 @@
-# Slack Copilot — agent guide
+# Ordo — agent guide
 
 Local, single-user app: watches two Slack workspaces for DMs/@-mentions, stores them in SQLite, analyzes each thread through a pluggable AI harness (default: Claude Code via the Agent SDK), shows an urgency-prioritized feed, and offers a per-thread chat that can draft a reply the user sends with a click. Ships as a menubar Mac app. Architecture: `DESIGN.md`. Harness layer: `docs/harness-providers.md`. UI spec: `docs/ux.md` (+ `docs/ux-mock.html`). User-facing guide: `README.md` (rewritten deliberately — don't "fix" its tone).
 
@@ -11,7 +11,7 @@ npm run typecheck  # tsc --noEmit (keep clean; no build step, tsx runs TS direct
 npm test           # node --test over test/**/*.test.ts; test:watch to iterate
 npm run harness:probe   # per-harness: tool posture, availability, safety proof (--live spends a real run)
 npm run app:dev    # prepare + run the Electron shell from source
-npm run app:build  # package release/mac-arm64/Slack Copilot.app (ad-hoc signed)
+npm run app:build  # package release/mac-arm64/Ordo.app (ad-hoc signed)
 npm run app:icons  # regenerate assets/ from code (no binary assets in git)
 ```
 

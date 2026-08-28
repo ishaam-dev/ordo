@@ -1,11 +1,11 @@
 # electron-builder configuration for the macOS app.
 #
 # The bundle contains only this folder: the main process, the waiting screen and
-# the icons. The Slack Copilot server itself is NOT copied in — the app runs the
+# the icons. The Ordo server itself is NOT copied in — the app runs the
 # project's own source at runtime, so the app can never drift from it, and .env
 # and data.db stay where they are.
-appId: ai.aifund.slack-copilot
-productName: Slack Copilot
+appId: ai.aifund.ordo
+productName: Ordo
 copyright: AI Fund
 
 directories:
@@ -42,4 +42,4 @@ mac:
     # Notifications should be banners the user can click, not silent entries.
     NSUserNotificationAlertStyle: alert
     LSMultipleInstancesProhibited: true
-    CFBundleDisplayName: Slack Copilot
+    CFBundleDisplayName: Ordo

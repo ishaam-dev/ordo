@@ -1,6 +1,6 @@
 {
     "display_information": {
-        "name": "Slack Copilot",
+        "name": "Ordo",
         "description": "Personal copilot feed for my DMs and mentions, analyzed by Claude locally"
     },
     "oauth_config": {

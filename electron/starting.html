@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
-<title>Slack Copilot</title>
+<title>Ordo</title>
 <style>
   /* Follows the Mac's appearance setting, like the app window it hands over to
      (electron/main.js sets the window background from nativeTheme to match). */
@@ -51,7 +51,7 @@
 <body>
   <div class="box" id="box">
     <div class="mark"><div class="bubble"></div></div>
-    <h1 id="title">Starting Slack Copilot…</h1>
+    <h1 id="title">Starting Ordo…</h1>
     <p id="detail">This takes a few seconds the first time.</p>
     <p id="extra" class="hidden"></p>
     <div class="spinner" id="spinner"></div>
@@ -62,23 +62,23 @@
 // nothing here is ever built from Slack content.
 const COPY = {
   starting: {
-    title: 'Starting Slack Copilot…',
+    title: 'Starting Ordo…',
     detail: 'This takes a few seconds the first time.',
     spin: true, warn: false,
   },
   down: {
-    title: 'Slack Copilot is restarting',
+    title: 'Ordo is restarting',
     detail: 'It stopped unexpectedly and is starting itself again. Nothing is lost.',
     spin: true, warn: true,
   },
   conflict: {
-    title: "Slack Copilot can't start",
+    title: "Ordo can't start",
     detail: 'Another program on this Mac is using the connection it needs. Restarting your Mac usually clears this.',
     spin: false, warn: true,
   },
   misconfigured: {
-    title: "Slack Copilot can't find its files",
-    detail: 'Open the Slack Copilot folder and double-click the file called install.command again.',
+    title: "Ordo can't find its files",
+    detail: 'Open the Ordo folder and double-click the file called install.command again.',
     spin: false, warn: true,
   },
 };

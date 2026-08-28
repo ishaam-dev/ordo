@@ -169,7 +169,7 @@ class FeedWatcher extends EventEmitter {
     if (fresh.length > MAX_NOTIFICATIONS_PER_POLL) {
       this.notify({
         title: `${fresh.length} urgent messages`,
-        body: 'Open Slack Copilot to see them.',
+        body: 'Open Ordo to see them.',
         threadId: null,
       });
       return;
@@ -220,7 +220,7 @@ function describe(item) {
     clean(item.why, 160) ||
     clean(item.summary, 160) ||
     clean(item.last_message && item.last_message.text, 160) ||
-    'Open Slack Copilot to read it.';
+    'Open Ordo to read it.';
   return {
     title: `${label} · ${who}`,
     subtitle: where,

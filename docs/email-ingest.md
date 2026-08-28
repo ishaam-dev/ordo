@@ -453,8 +453,8 @@ effort as the Slack setup in the README, which you have already been through.
    "Google hasn't verified this app" warning and having to sign in again every single week,
    forever. Getting this one right is the difference between a good afternoon and a bad one.
 3. You create a **desktop app** entry and download the small file it gives you.
-4. You drop that file into the Slack Copilot folder and restart the app.
-5. Your browser opens once, Google asks *"Slack Copilot wants to read your email — allow?"*,
+4. You drop that file into the Ordo folder and restart the app.
+5. Your browser opens once, Google asks *"Ordo wants to read your email — allow?"*,
    you say yes, and that's it. It never asks again.
 
 **What this does and doesn't give the app.** It can **read** your mail. It cannot send, delete,

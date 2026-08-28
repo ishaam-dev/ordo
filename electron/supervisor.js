@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Keeps the Slack Copilot server alive and reports, in plain English, whether it is.
+ * Keeps the Ordo server alive and reports, in plain English, whether it is.
  *
  * Two modes, decided at runtime:
  *   - "ours"     — nothing was listening, so we started the server ourselves and we
@@ -185,7 +185,7 @@ class Supervisor extends EventEmitter {
         this.owner = null;
         this.setServerState(
           'conflict',
-          'Another program on this Mac is using the connection Slack Copilot needs.',
+          'Another program on this Mac is using the connection Ordo needs.',
         );
       } else {
         this.onServerDown();
@@ -208,7 +208,7 @@ class Supervisor extends EventEmitter {
         this.adoptedPid = orphan;
         this.owner = 'ours';
       } else {
-        log('a Slack Copilot server is already running; attaching to it');
+        log('a Ordo server is already running; attaching to it');
         this.owner = 'external';
         this.slackState = 'unknown';
       }
@@ -258,7 +258,7 @@ class Supervisor extends EventEmitter {
     if (!projectDir) {
       this.setServerState(
         'misconfigured',
-        "Slack Copilot can't find its files. Open the Slack Copilot folder and double-click install.command again.",
+        "Ordo can't find its files. Open the Ordo folder and double-click install.command again.",
       );
       return;
     }
@@ -266,7 +266,7 @@ class Supervisor extends EventEmitter {
     if (!nodeBin) {
       this.setServerState(
         'misconfigured',
-        'A piece of software Slack Copilot needs (Node) is missing from this Mac.',
+        'A piece of software Ordo needs (Node) is missing from this Mac.',
       );
       return;
     }
@@ -276,7 +276,7 @@ class Supervisor extends EventEmitter {
 
   problemForDown() {
     if (this.restarts >= 5 && Date.now() - this.lastHealthyAt > 5 * 60_000) {
-      return "Slack Copilot keeps stopping. Open the activity log to see why.";
+      return "Ordo keeps stopping. Open the activity log to see why.";
     }
     return null;
   }
@@ -447,7 +447,7 @@ async function probeServer() {
   } catch {
     return 'foreign';
   }
-  return /slack copilot/i.test(html) || /COPILOT_TOKEN/.test(html) ? 'up' : 'foreign';
+  return /ordo/i.test(html) || /COPILOT_TOKEN/.test(html) ? 'up' : 'foreign';
 }
 
 /**

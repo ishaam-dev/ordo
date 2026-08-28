@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Slack Copilot</title>
+<title>Ordo</title>
 <style>
   /* ================= tokens (docs/ux.md §2) =================
      The palette follows the Mac's appearance setting. :root holds the dark
@@ -526,7 +526,7 @@
 <script>
 'use strict';
 /* =========================================================================
-   Slack Copilot UI — vanilla, single file, no external assets.
+   Ordo UI — vanilla, single file, no external assets.
    Spec: docs/ux.md · reference render: docs/ux-mock.html
 
    SECURITY (do not regress):
@@ -1812,7 +1812,7 @@ function renderFeed() {
   if (!state.loaded && !state.items.length) {
     if (state.feedError) {
       const p = el('div', 'placeholder');
-      p.innerHTML = html`<b>Can't reach your messages</b>Slack Copilot isn't answering (${state.feedError}).<br>Retrying every ${POLL_MS / 1000} seconds. If this stays, quit and reopen the app.`;
+      p.innerHTML = html`<b>Can't reach your messages</b>Ordo isn't answering (${state.feedError}).<br>Retrying every ${POLL_MS / 1000} seconds. If this stays, quit and reopen the app.`;
       feedListEl.replaceChildren(p);
     } else {
       feedListEl.replaceChildren(skeletonFeed());
@@ -2471,7 +2471,7 @@ function renderTitleBadge() {
   const unseen = state.items.filter((i) => i.status === 'new' && (i.urgency === 'P0' || i.urgency === 'P1'));
   const p0 = unseen.some((i) => i.urgency === 'P0');
   const n = unseen.length;
-  document.title = n ? '(' + n + (p0 ? '!' : '') + ') Slack Copilot' : 'Slack Copilot';
+  document.title = n ? '(' + n + (p0 ? '!' : '') + ') Ordo' : 'Ordo';
   drawFavicon(n, p0);
 }
 

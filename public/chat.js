@@ -1,6 +1,6 @@
 'use strict';
 /* =========================================================================
-   Slack Copilot — chat panel. Owns the #chat pane; nothing else in the app
+   Ordo — chat panel. Owns the #chat pane; nothing else in the app
    renders inside it. Spec: docs/ux.md §6. Server: src/chat.ts.
 
    HOW IT ATTACHES

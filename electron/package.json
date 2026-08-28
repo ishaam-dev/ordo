@@ -1,8 +1,8 @@
 {
-  "name": "slack-copilot-mac",
-  "productName": "Slack Copilot",
+  "name": "ordo-mac",
+  "productName": "Ordo",
   "version": "0.1.0",
-  "description": "Slack Copilot — your Slack messages, sorted by what matters",
+  "description": "Ordo — your Slack messages, sorted by what matters",
   "main": "main.js",
   "author": "AI Fund",
   "license": "UNLICENSED",

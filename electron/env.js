@@ -26,12 +26,12 @@ const NODE_CANDIDATES = [
 ];
 
 const PROJECT_GUESSES = [
-  'slack-copilot',
-  'Documents/slack-copilot',
-  'Developer/slack-copilot',
-  'Projects/slack-copilot',
-  'code/slack-copilot',
-  'src/slack-copilot',
+  'ordo',
+  'Documents/ordo',
+  'Developer/ordo',
+  'Projects/ordo',
+  'code/ordo',
+  'src/ordo',
 ];
 
 function readJson(file) {
@@ -84,7 +84,7 @@ let cachedConfig = null;
 
 /**
  * Resolution order for the project folder:
- *   1. SLACK_COPILOT_PROJECT_DIR (for testing)
+ *   1. ORDO_PROJECT_DIR (for testing)
  *   2. the config the installer wrote into Application Support
  *   3. the path baked in at build time
  *   4. a short list of obvious places
@@ -95,7 +95,7 @@ function config() {
   const fromBuild = readJson(path.join(__dirname, 'project-path.json')) || {};
 
   const candidates = [
-    process.env.SLACK_COPILOT_PROJECT_DIR,
+    process.env.ORDO_PROJECT_DIR,
     fromInstaller.projectDir,
     fromBuild.projectDir,
   ].filter(Boolean);
@@ -103,7 +103,7 @@ function config() {
   let projectDir = candidates.find(projectLooksUsable) || null;
   if (!projectDir) projectDir = guessProjectDir();
 
-  const rawPort = process.env.SLACK_COPILOT_PORT || fromInstaller.port || fromBuild.port;
+  const rawPort = process.env.ORDO_PORT || fromInstaller.port || fromBuild.port;
   const port = Number(rawPort);
 
   cachedConfig = {
@@ -240,7 +240,7 @@ function rotateIfBig(file) {
 }
 
 /**
- * Appends to ~/Library/Logs/Slack Copilot/app.log. Callers must never pass the API
+ * Appends to ~/Library/Logs/Ordo/app.log. Callers must never pass the API
  * token or anything read out of .env — this file is plain text on disk.
  */
 function log(...parts) {
