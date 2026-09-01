@@ -304,6 +304,8 @@ export interface FeedItem {
   why: string | null;
   summary: string | null;
   suggested_action: string | null;
+  /** When the analysis last ran — how the UI notices a re-check landed on a quiet thread. */
+  analyzed_at: string | null;
   last_message: {
     author_id: string | null;
     author_name: string | null;
@@ -399,7 +401,7 @@ const stmtFeed = db.prepare(
   `SELECT
      t.id, t.workspace, t.team_name, t.channel_name, t.kind, t.status, t.last_activity, t.permalink,
      t.source, t.subject, t.recipient_role,
-     a.urgency, a.why, a.summary, a.suggested_action,
+     a.urgency, a.why, a.summary, a.suggested_action, a.analyzed_at,
      lm.author_id AS last_author_id, lm.author_name AS last_author_name, lm.text AS last_text, lm.ts AS last_ts,
      (SELECT COUNT(*) FROM messages mc WHERE mc.thread_id = t.id) AS message_count,
      (SELECT COUNT(*) FROM items i WHERE i.thread_id = t.id
@@ -613,6 +615,7 @@ export function getFeed(): FeedItem[] {
     why: (r.why as string | null) ?? null,
     summary: (r.summary as string | null) ?? null,
     suggested_action: (r.suggested_action as string | null) ?? null,
+    analyzed_at: (r.analyzed_at as string | null) ?? null,
     last_message:
       r.last_ts != null
         ? {
@@ -1271,6 +1274,53 @@ const stmtThreadsNeedingAnalysis = db.prepare(
  */
 export function listThreadsNeedingAnalysis(): ThreadRow[] {
   return stmtThreadsNeedingAnalysis.all() as unknown as ThreadRow[];
+}
+
+/*
+ * Threads that are quiet but may be settled: an open/waiting item with a stated due
+ * date is often resolved OUTSIDE Slack — fulfilled there (a sent email the analyzer
+ * can find), or made moot by time (a live poll for a meeting now over) — and nothing
+ * in the thread ever triggers the re-analysis that would notice. Two bounded arms:
+ *
+ *   VERIFY — from the due date until two days after it, while the last analysis is
+ *   older than the caller's cutoff (the analyzer paces these; the window bounds them).
+ *
+ *   FINAL LOOK — an item more than two days past due whose thread was last analyzed
+ *   before the item was three days past due has never been seen expired: it gets one
+ *   post-expiry review. The completed review moves analyzed_at past that boundary, so
+ *   this arm fires at most once per item — backlog included. (analyzed_at is UTC and
+ *   due is a local date; the ±hours of slop only shifts WHEN the one look happens.)
+ *
+ * Slack-only, like every analyzer path (email threads untouched).
+ */
+const stmtThreadsNeedingItemRecheck = db.prepare(
+  `SELECT t.* FROM threads t
+   JOIN analyses a ON a.thread_id = t.id
+   JOIN items i ON i.thread_id = t.id
+   WHERE t.status != 'done'
+     AND t.source = 'slack'
+     AND i.status IN ('open', 'waiting')
+     AND i.user_done = 0
+     AND i.due IS NOT NULL
+     AND a.analyzed_at IS NOT NULL
+     AND (
+       (
+         i.due <= date('now', 'localtime')
+         AND i.due >= date('now', 'localtime', '-2 days')
+         AND a.analyzed_at <= ?
+       )
+       OR (
+         i.due < date('now', 'localtime', '-2 days')
+         AND a.analyzed_at < datetime(i.due, '+3 days')
+       )
+     )
+   GROUP BY t.id
+   ORDER BY MIN(i.due) ASC, t.id ASC`,
+);
+
+/** Threads with a due/lapsed open item worth a re-look (verify arm paced by the ISO cutoff). */
+export function listThreadsNeedingItemRecheck(analyzedBeforeIso: string): ThreadRow[] {
+  return stmtThreadsNeedingItemRecheck.all(analyzedBeforeIso) as unknown as ThreadRow[];
 }
 
 const stmtUpsertAnalysis = db.prepare(

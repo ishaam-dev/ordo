@@ -8,7 +8,7 @@ import './helpers/env.js';
 import { assertIsolated } from './helpers/env.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { resetDb, seedThread, seedMessage } from './helpers/fixtures.js';
+import { raw, resetDb, seedThread, seedMessage } from './helpers/fixtures.js';
 import { makeFakeHarness } from './helpers/fake-harness.js';
 
 const db = await import('../src/db.js');
@@ -142,8 +142,118 @@ test('SYSTEM_PROMPT and schema carry the items contract', () => {
   assert.ok(analyzer.SYSTEM_PROMPT.includes('ITEMS'));
   assert.ok(analyzer.SYSTEM_PROMPT.includes('NEVER renamed'));
   assert.ok(analyzer.SYSTEM_PROMPT.includes('"items":[{'));
+  // Out-of-thread completion: verified with a cited lookup, never guessed.
+  assert.ok(analyzer.SYSTEM_PROMPT.includes('OUTSIDE the thread'));
+  assert.ok(analyzer.SYSTEM_PROMPT.includes("search the user's sent mail"));
+  assert.ok(analyzer.SYSTEM_PROMPT.includes('Never mark an item done on a guess'));
   const parsed = analyzer.parseAnalysis(
     '{"urgency":"P1","why":"w","summary":"s","suggested_action":"a","context_notes":"","items":"nonsense"}',
   );
   assert.deepEqual(parsed.items, [], 'malformed items never sink the verdict');
+});
+
+// ---------------------------------------------------------------------------
+// due-date re-checks: quiet threads whose items may have been settled outside Slack
+// ---------------------------------------------------------------------------
+
+/** Local YYYY-MM-DD, offset in days — matching how the model writes `due`. */
+function localDay(offsetDays: number): string {
+  const d = new Date(Date.now() + offsetDays * 86_400_000);
+  const p = (n: number): string => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+const hoursAgo = (h: number): string => new Date(Date.now() - h * 3_600_000).toISOString();
+
+function seedAnalysis(threadId: number, analyzedAt: string, covered = '1000.000100'): void {
+  db.upsertAnalysis({
+    threadId,
+    urgency: 'P2',
+    why: 'w',
+    summary: 's',
+    suggestedAction: 'a',
+    contextNotes: '',
+    coveredThroughTs: covered,
+    analyzedAt,
+    sessionId: null,
+  });
+}
+
+test('listThreadsNeedingItemRecheck: a due item on a stale analysis re-checks; fresh/undue ones do not', () => {
+  resetDb();
+  const cutoff = hoursAgo(6);
+
+  const dueToday = seedThread({ thread_ts: 'rc1.1', channel_id: 'CRC1' });
+  seedAnalysis(dueToday, hoursAgo(8));
+  db.reconcileItems(dueToday, [item({ due: localDay(0) })]);
+
+  const freshAnalysis = seedThread({ thread_ts: 'rc1.2', channel_id: 'CRC2' });
+  seedAnalysis(freshAnalysis, hoursAgo(1)); // looked at recently — paced out
+  db.reconcileItems(freshAnalysis, [item({ due: localDay(0) })]);
+
+  const dueTomorrow = seedThread({ thread_ts: 'rc1.3', channel_id: 'CRC3' });
+  seedAnalysis(dueTomorrow, hoursAgo(8));
+  db.reconcileItems(dueTomorrow, [item({ due: localDay(1) })]);
+
+  const noDue = seedThread({ thread_ts: 'rc1.4', channel_id: 'CRC4' });
+  seedAnalysis(noDue, hoursAgo(8));
+  db.reconcileItems(noDue, [item({})]);
+
+  const ids = db.listThreadsNeedingItemRecheck(cutoff).map((t) => t.id);
+  assert.deepEqual(ids, [dueToday]);
+
+  // The feed exposes analyzed_at so the UI can notice a re-check landing on a
+  // quiet thread (the pane keys its cache on it).
+  const feedRow = db.getFeed().find((f) => f.id === dueToday);
+  assert.equal(typeof feedRow?.analyzed_at, 'string');
+});
+
+test('listThreadsNeedingItemRecheck: ticked, model-done, done-thread and email rows never re-check', () => {
+  resetDb();
+  const cutoff = hoursAgo(6);
+
+  const ticked = seedThread({ thread_ts: 'rc2.1', channel_id: 'CRC1' });
+  seedAnalysis(ticked, hoursAgo(8));
+  db.reconcileItems(ticked, [item({ due: localDay(0) })]);
+  db.setItemDone(db.listItemsForThread(ticked)[0].id, true);
+
+  const modelDone = seedThread({ thread_ts: 'rc2.2', channel_id: 'CRC2' });
+  seedAnalysis(modelDone, hoursAgo(8));
+  db.reconcileItems(modelDone, [item({ status: 'done', due: localDay(0) })]);
+
+  const doneThread = seedThread({ thread_ts: 'rc2.3', channel_id: 'CRC3', status: 'done' });
+  seedAnalysis(doneThread, hoursAgo(8));
+  db.reconcileItems(doneThread, [item({ due: localDay(0) })]);
+
+  const email = seedThread({ thread_ts: 'rc2.4', channel_id: 'CRC4' });
+  seedAnalysis(email, hoursAgo(8));
+  db.reconcileItems(email, [item({ due: localDay(0) })]);
+  raw().prepare("UPDATE threads SET source = 'gmail' WHERE id = ?").run(email);
+
+  assert.deepEqual(db.listThreadsNeedingItemRecheck(cutoff), []);
+});
+
+test('listThreadsNeedingItemRecheck: a long-lapsed item gets exactly one post-expiry look', () => {
+  resetDb();
+  const cutoff = hoursAgo(6);
+
+  // Analyzed on its due day eleven days ago, never since: the backlog case.
+  const lapsed = seedThread({ thread_ts: 'rc3.1', channel_id: 'CRC1' });
+  seedAnalysis(lapsed, hoursAgo(11 * 24));
+  db.reconcileItems(lapsed, [item({ due: localDay(-11) })]);
+  assert.deepEqual(db.listThreadsNeedingItemRecheck(cutoff).map((t) => t.id), [lapsed]);
+
+  // The look happened (analysis is now post-expiry) and the model kept it open:
+  // its one look is spent — it never comes back.
+  seedAnalysis(lapsed, new Date().toISOString());
+  assert.deepEqual(db.listThreadsNeedingItemRecheck(cutoff), []);
+});
+
+test('pickNext falls through to due-item re-checks when no thread has new words', () => {
+  resetDb();
+  const id = seedThread({ thread_ts: 'rc4.1', channel_id: 'CRC1', last_activity: '1000.000100' });
+  seedMessage({ thread_id: id, text: 'please send the details by Friday' });
+  seedAnalysis(id, hoursAgo(8), '1000.000100'); // covered == last_activity: not stale
+  db.reconcileItems(id, [item({ due: localDay(0) })]);
+  assert.equal(analyzer.pickNext()?.id, id);
 });

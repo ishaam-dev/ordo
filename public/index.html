@@ -1287,6 +1287,13 @@ async function loadFeed() {
     ensureCursor();
     renderAll();
     hydrate();
+    // The open pane follows the feed: a re-check can update a thread nobody messaged.
+    // loadDetail keys its cache on last_activity + analyzed_at, so this is a
+    // synchronous no-op whenever neither moved. Only for a row still in the feed —
+    // a vanished row has no key to compare and would refetch forever.
+    if (state.cursor != null && state.detail && !state.detailLoading && itemById(state.cursor)) {
+      void loadDetail(state.cursor);
+    }
   } catch (err) {
     state.feedError = err && err.message ? err.message : 'unknown error';
     renderStrip();
@@ -1400,7 +1407,9 @@ async function loadDetail(id) {
   // transcript, and never allowed to fail the thread load.
   if (!handoffState(id).loaded) void loadHandoff(id);
   const it = itemById(id);
-  const key = id + ':' + (it ? it.last_activity : '');
+  // analyzed_at is part of the key: a due-item re-check lands a fresh analysis on a
+  // thread whose last_activity never moved, and the pane must not serve the old one.
+  const key = id + ':' + (it ? it.last_activity : '') + ':' + ((it && it.analyzed_at) || '');
   const c = state.cache.get(id);
   if (c && c.key === key) {
     state.detail = c.detail; state.detailLoading = false; renderThread(); return;

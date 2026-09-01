@@ -31,6 +31,7 @@ export function resetDb(): void {
   for (const table of [
     'chat_messages',
     'chat_sessions',
+    'items',
     'analyses',
     'messages',
     'threads',
@@ -139,7 +140,10 @@ export function seedSlackUser(u: SlackUserFixture = {}): void {
       'is_bot' in u ? u.is_bot : null,
       'tz' in u ? u.tz : null,
       'tz_label' in u ? u.tz_label : null,
-      'updated_at' in u ? u.updated_at : '2026-08-01T00:00:00.000Z',
+      // Fresh by default: src/ingest.ts re-sweeps profiles older than PROFILE_STALE_MS
+      // against the real clock, so a hardcoded date here is a test time bomb — it was
+      // fresh when written and silently went stale two weeks later.
+      'updated_at' in u ? u.updated_at : new Date().toISOString(),
     );
 }
 
