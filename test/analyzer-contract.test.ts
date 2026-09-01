@@ -623,6 +623,17 @@ test('buildPrompt: with no profiles at all the prompt is still complete', () => 
   ), true);
 });
 
+test('buildPrompt: channel context is its own untrusted block, present only when fetched', () => {
+  const messages = [msg('1700000000.000100', 'U1', 'Alice', 'ping')];
+  const ctx = '[2023-11-14 22:10] Bob: the deploy discussion continues';
+  const withCtx = buildPrompt(thread(), messages, 'UME', new Map(), [], ctx);
+  assert.ok(withCtx.includes('BEGIN CHANNEL CONTEXT'));
+  assert.ok(withCtx.includes('untrusted data'));
+  assert.ok(withCtx.includes(ctx));
+  // Without context the block is absent entirely — no empty scaffolding for the model.
+  assert.equal(buildPrompt(thread(), messages, 'UME').includes('CHANNEL CONTEXT'), false);
+});
+
 // ---------------------------------------------------------------------------
 // the system prompt: use tools as needed, cite them, stay read-only
 // ---------------------------------------------------------------------------
