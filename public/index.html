@@ -389,7 +389,13 @@
   .daytoggle:hover{color:var(--text-2)}
   .divider.stale-div{color:var(--warn)}
   .divider.stale-div::before,.divider.stale-div::after{border-color:var(--line-warn)}
-  .msg{display:flex;gap:10px;padding:3px 0}
+  .msg{display:flex;gap:10px;padding:3px 0;position:relative}
+  .reactbar{display:none;position:absolute;top:-12px;right:6px;gap:2px;z-index:3;
+    background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:1px 4px}
+  .msg:hover .reactbar{display:inline-flex}
+  .rbtn{background:none;border:0;font-size:13px;cursor:pointer;padding:1px 2px;border-radius:6px;line-height:1.2}
+  .rbtn:hover{background:var(--surface-2)}
+  .cemoji{width:17px;height:17px;vertical-align:-3px}
   .msg.first{margin-top:10px}
   .avatar{width:26px;height:26px;border-radius:5px;background:var(--surface-2);flex:none;
     display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:var(--text-2)}
@@ -591,8 +597,13 @@ function httpUrlOrNull(u) {
 async function api(path, options) {
   const res = await apiFetch(path, options);
   if (res.status === 401) { handleAuthFailure(); throw new Error('unauthorized'); }
-  if (!res.ok) throw new Error('HTTP ' + res.status);
-  return res.json();
+  let data = null;
+  try { data = await res.json(); } catch (_) { /* non-JSON body */ }
+  if (!res.ok) {
+    const msg = data && (data.message || data.error);
+    throw new Error(msg ? String(msg) : 'HTTP ' + res.status);
+  }
+  return data;
 }
 
 /* ============================ tiny DOM helpers ============================ */
@@ -687,6 +698,105 @@ const EMOJI = {
   ship:'🚢', tada2:'🎊', 'raised_hand':'✋', 'point_up':'☝️', 'no_bell':'🔕',
   100:'💯', ok:'🆗', new:'🆕', up:'🆙', top:'🔝', recycle:'♻️'
 };
+/* Second tranche + Slack's skin-tone modifiers (absorbed — rendered as nothing so
+   ":thumbsup::skin-tone-3:" degrades to the plain glyph instead of raw text). */
+Object.assign(EMOJI, {
+  slightly_smiling_face:'🙂', upside_down_face:'🙃', grinning:'😀', rofl:'🤣',
+  heart_eyes:'😍', smiling_face_with_3_hearts:'🥰', star_struck:'🤩', zany_face:'🤪',
+  partying_face:'🥳', smiling_face_with_tear:'🥲', hugs:'🤗', hugging_face:'🤗',
+  melting_face:'🫠', saluting_face:'🫡', face_with_peeking_eye:'🫣', yum:'😋',
+  relieved:'😌', pensive:'😔', sleepy:'😪', drooling_face:'🤤', grimacing:'😬',
+  roll_eyes:'🙄', face_with_rolling_eyes:'🙄', smirk:'😏', unamused:'😒',
+  sweat:'😓', cold_sweat:'😰', disappointed:'😞', weary:'😩', tired_face:'😫',
+  flushed:'😳', mind_blown:'🤯', exploding_head:'🤯', skull:'💀',
+  skull_and_crossbones:'☠️', face_with_hand_over_mouth:'🤭', shushing_face:'🤫',
+  face_with_monocle:'🧐', nauseated_face:'🤢', face_vomiting:'🤮', sneezing_face:'🤧',
+  mask:'😷', face_with_thermometer:'🤒', money_mouth_face:'🤑', cowboy_hat_face:'🤠',
+  innocent:'😇', slightly_frowning_face:'🙁', frowning_face:'☹️', open_mouth:'😮',
+  hushed:'😯', astonished:'😲', pleading_face:'🥺', worried:'😟', triumph:'😤',
+  pout:'😡', angry_face:'😠', crossed_fingers:'🤞', v:'✌️', love_you_gesture:'🤟',
+  metal:'🤘', call_me_hand:'🤙', point_up_2:'👆', point_down:'👇', point_left:'👈',
+  fist:'✊', facepunch:'👊', punch:'👊', fist_left:'🤛', fist_right:'🤜',
+  raised_hand:'✋', hand:'✋', raised_back_of_hand:'🤚', palms_up_together:'🤲',
+  open_hands:'👐', pinched_fingers:'🤌', pinching_hand:'🤏', writing_hand:'✍️',
+  nail_care:'💅', selfie:'🤳', blue_heart:'💙', green_heart:'💚', purple_heart:'💜',
+  yellow_heart:'💛', orange_heart:'🧡', black_heart:'🖤', white_heart:'🤍',
+  brown_heart:'🤎', sparkling_heart:'💖', heartpulse:'💗', two_hearts:'💕',
+  revolving_hearts:'💞', heart_decoration:'💟', heavy_heart_exclamation:'❣️',
+  mending_heart:'❤️‍🩹', heart_on_fire:'❤️‍🔥', cupid:'💘', gift_heart:'💝',
+  dizzy:'💫', sweat_drops:'💦', dash:'💨', hole:'🕳️', anger:'💢', zzz:'💤',
+  wavy_dash:'〰️', ballot_box_with_check:'☑️', heavy_plus_sign:'➕',
+  heavy_minus_sign:'➖', heavy_division_sign:'➗', heavy_multiplication_x:'✖️',
+  exclamation:'❗', grey_exclamation:'❕', grey_question:'❔', interrobang:'⁉️',
+  information_source:'ℹ️', arrows_counterclockwise:'🔄', arrows_clockwise:'🔃',
+  arrow_right:'➡️', arrow_left:'⬅️', arrow_up:'⬆️', arrow_down:'⬇️',
+  arrow_upper_right:'↗️', arrow_lower_right:'↘️', arrow_heading_up:'⤴️',
+  arrow_right_hook:'↪️', leftwards_arrow_with_hook:'↩️', fast_forward:'⏩',
+  rewind:'⏪', arrow_forward:'▶️', arrow_backward:'◀️', pause_button:'⏸️',
+  stop_button:'⏹️', record_button:'⏺️', repeat:'🔁', red_circle:'🔴',
+  orange_circle:'🟠', yellow_circle:'🟡', blue_circle:'🔵', purple_circle:'🟣',
+  brown_circle:'🟤', white_circle:'⚪', black_circle:'⚫', red_square:'🟥',
+  orange_square:'🟧', yellow_square:'🟨', green_square:'🟩', blue_square:'🟦',
+  purple_square:'🟪', black_square:'⬛', white_square:'⬜',
+  small_blue_diamond:'🔹', small_orange_diamond:'🔸', large_blue_diamond:'🔷',
+  large_orange_diamond:'🔶', diamond_shape_with_a_dot_inside:'💠',
+  one:'1️⃣', two:'2️⃣', three:'3️⃣', four:'4️⃣', five:'5️⃣', six:'6️⃣',
+  seven:'7️⃣', eight:'8️⃣', nine:'9️⃣', keycap_ten:'🔟', zero:'0️⃣', hash:'#️⃣',
+  briefcase:'💼', spiral_note_pad:'🗒️', spiral_notepad:'🗒️', pencil2:'✏️',
+  black_nib:'🖋️', fountain_pen:'🖋️', paperclip:'📎', paperclips:'🖇️',
+  scissors:'✂️', straight_ruler:'📏', triangular_ruler:'📐', card_index:'📇',
+  card_file_box:'🗃️', file_cabinet:'🗄️', wastebasket:'🗑️', bookmark:'🔖',
+  books:'📚', notebook:'📓', ledger:'📒', page_with_curl:'📃', bookmark_tabs:'📑',
+  newspaper:'📰', file_folder:'📁', open_file_folder:'📂', page_facing_up:'📄',
+  chart_with_downwards_trend:'📉', bar_chart:'📊', clipboard:'📋', pushpin:'📌',
+  round_pushpin:'📍', triangular_flag_on_post:'🚩', envelope:'✉️',
+  incoming_envelope:'📨', envelope_with_arrow:'📩', e_mail:'📧', 'e-mail':'📧',
+  inbox_tray:'📥', outbox_tray:'📤', package:'📦', mailbox:'📫', postbox:'📮',
+  moneybag:'💰', dollar:'💵', money_with_wings:'💸', credit_card:'💳', coin:'🪙',
+  receipt:'🧾', chart:'💹', currency_exchange:'💱', heavy_dollar_sign:'💲',
+  phone:'☎️', telephone_receiver:'📞', iphone:'📱', calling:'📲', computer:'💻',
+  desktop_computer:'🖥️', keyboard:'⌨️', printer:'🖨️', fax:'📠', tv:'📺',
+  camera:'📷', video_camera:'📹', movie_camera:'🎥', film_frames:'🎞️',
+  microphone:'🎤', headphones:'🎧', loud_sound:'🔊', mute:'🔇', loudspeaker:'📢',
+  battery:'🔋', electric_plug:'🔌', flashlight:'🔦', candle:'🕯️',
+  hourglass:'⌛', watch:'⌚', stopwatch:'⏱️', timer_clock:'⏲️', mantelpiece_clock:'🕰️',
+  airplane:'✈️', rocket_launch:'🚀', car:'🚗', taxi:'🚕', bus:'🚌', train2:'🚆',
+  metro:'🚇', bike:'🚲', motor_scooter:'🛵', house:'🏠', office:'🏢', bank:'🏦',
+  hotel:'🏨', hospital:'🏥', school:'🏫', factory:'🏭', world_map:'🗺️',
+  earth_americas:'🌎', earth_africa:'🌍', earth_asia:'🌏', globe_with_meridians:'🌐',
+  sunny:'☀️', partly_sunny:'⛅', cloud:'☁️', rain_cloud:'🌧️', umbrella:'☂️',
+  snowflake:'❄️', snowman:'⛄', wind_blowing_face:'🌬️', tornado:'🌪️', fog:'🌫️',
+  rainbow:'🌈', droplet:'💧', ocean:'🌊', crescent_moon:'🌙', full_moon:'🌕',
+  new_moon:'🌑', sun_with_face:'🌞', dog:'🐶', cat:'🐱', fox_face:'🦊', bear:'🐻',
+  panda_face:'🐼', koala:'🐨', tiger:'🐯', lion:'🦁', unicorn:'🦄',
+  unicorn_face:'🦄', butterfly:'🦋', bee:'🐝', honeybee:'🐝', snail:'🐌',
+  turtle:'🐢', whale:'🐳', dolphin:'🐬', octopus:'🐙', crab:'🦀', penguin:'🐧',
+  owl:'🦉', eagle:'🦅', duck:'🦆', seedling:'🌱', herb:'🌿',
+  four_leaf_clover:'🍀', evergreen_tree:'🌲', palm_tree:'🌴', cactus:'🌵',
+  bouquet:'💐', rose:'🌹', sunflower:'🌻', tulip:'🌷', cherry_blossom:'🌸',
+  hibiscus:'🌺', fallen_leaf:'🍂', maple_leaf:'🍁', mushroom:'🍄', apple:'🍎',
+  banana:'🍌', grapes:'🍇', watermelon:'🍉', lemon:'🍋', strawberry:'🍓',
+  avocado:'🥑', croissant:'🥐', bread:'🍞', cheese_wedge:'🧀', egg:'🥚',
+  bacon:'🥓', hamburger:'🍔', fries:'🍟', hotdog:'🌭', popcorn:'🍿', ramen:'🍜',
+  sushi:'🍣', burrito:'🌯', salad:'🥗', cookie:'🍪', doughnut:'🍩', cupcake:'🧁',
+  chocolate_bar:'🍫', candy:'🍬', lollipop:'🍭', honey_pot:'🍯', ice_cream:'🍨',
+  shaved_ice:'🍧', birthday:'🎂', wine_glass:'🍷', cocktail:'🍸', tropical_drink:'🍹',
+  champagne:'🍾', clinking_glasses:'🥂', beers:'🍻', tumbler_glass:'🥃', tea:'🍵',
+  milk_glass:'🥛', cup_with_straw:'🥤', trophy:'🏆', medal:'🏅',
+  first_place_medal:'🥇', second_place_medal:'🥈', third_place_medal:'🥉',
+  soccer:'⚽', basketball:'🏀', football:'🏈', baseball:'⚾', tennis:'🎾',
+  dart:'🎯', bowling:'🎳', video_game:'🎮', game_die:'🎲', jigsaw:'🧩',
+  chess_pawn:'♟️', performing_arts:'🎭', art:'🎨', clapper:'🎬', ticket:'🎫',
+  circus_tent:'🎪', guitar:'🎸', violin:'🎻', drum_with_drumsticks:'🥁',
+  musical_note:'🎵', notes:'🎶', musical_keyboard:'🎹', trumpet:'🎺',
+  confetti_ball:'🎊', balloon:'🎈', gift:'🎁', ribbon:'🎀', crown:'👑', gem:'💎',
+  ring:'💍', lipstick:'💄', eyeglasses:'👓', dark_sunglasses:'🕶️', necktie:'👔',
+  shirt:'👕', tshirt:'👕', jeans:'👖', dress:'👗', coat:'🧥', socks:'🧦',
+  gloves:'🧤', scarf:'🧣', billed_cap:'🧢', tophat:'🎩', mortar_board:'🎓',
+  rescue_worker_helmet:'⛑️', shopping_bags:'🛍️', shopping_trolley:'🛒',
+  'skin-tone-2':'', 'skin-tone-3':'', 'skin-tone-4':'', 'skin-tone-5':'',
+  'skin-tone-6':''
+});
 
 function decodeEntities(s) {
   return String(s).replace(/&(amp|lt|gt|quot|#0?39|apos);/g, (m, e) => (
@@ -755,8 +865,19 @@ function appendInline(parent, text, names, depth) {
       parent.appendChild(angleToken(m[2], names));
     } else if (m[3] !== undefined) {
       const code = m[3].toLowerCase();
-      if (EMOJI[code]) parent.appendChild(document.createTextNode(EMOJI[code]));
-      else parent.appendChild(el('span', 'emoji-miss', ':' + m[3] + ':'));
+      const customUrl = state.customEmoji[code] ? httpUrlOrNull(state.customEmoji[code]) : null;
+      if (customUrl) {
+        const img = document.createElement('img');
+        img.className = 'cemoji';
+        img.src = customUrl;
+        img.alt = ':' + m[3] + ':';
+        img.title = ':' + m[3] + ':';
+        parent.appendChild(img);
+      } else if (EMOJI[code] !== undefined) {
+        if (EMOJI[code] !== '') parent.appendChild(document.createTextNode(EMOJI[code]));
+      } else {
+        parent.appendChild(el('span', 'emoji-miss', ':' + m[3] + ':'));
+      }
     } else {
       const tag = m[4] !== undefined ? 'strong' : m[5] !== undefined ? 'em' : 's';
       const inner = m[4] !== undefined ? m[4] : m[5] !== undefined ? m[5] : m[6];
@@ -865,7 +986,10 @@ function plainText(text, names) {
     if (head === '!') return '@' + body.slice(1);
     return label || body.replace(/^mailto:/i, '');
   });
-  s = s.replace(/:([a-z0-9_+\-']+):/gi, (m, c) => EMOJI[c.toLowerCase()] || m);
+  s = s.replace(/:([a-z0-9_+\-']+):/gi, (m, c) => {
+    const k = c.toLowerCase();
+    return EMOJI[k] !== undefined ? EMOJI[k] : m;
+  });
   // drop `_` only when it delimits italics, so snake_case survives the snippet
   s = s.replace(/(^|[^\w])_([^_\n]+)_(?=[^\w]|$)/g, '$1$2');
   s = s.replace(/[*~`]/g, '');
@@ -962,6 +1086,7 @@ const state = {
   reanalyze: new Map(),    // thread id -> 'busy' | 'queued' (transient UI state)
   handoff: new Map(),      // thread id -> "Continue in Claude Code" state (see loadHandoff)
   dayFolds: new Map(),     // thread id -> Map(dayStartMs -> bool) manual fold overrides
+  customEmoji: {},         // workspace custom emoji name -> image URL (from /api/emoji)
 };
 
 const feedListEl = document.getElementById('feedlist');
@@ -1993,6 +2118,41 @@ function threadHeader(it, d) {
   return h;
 }
 
+/* Reactions the user can tap straight onto a message. Fixed, tiny, deliberate set —
+   this is a quick-ack affordance, not an emoji keyboard. */
+const REACT_CHOICES = [
+  ['+1', '👍'], ['white_check_mark', '✅'], ['pray', '🙏'], ['joy', '😂'],
+  ['heart', '❤️'], ['eyes', '👀'], ['tada', '🎉'], ['rocket', '🚀'],
+];
+
+function reactBar(it, m) {
+  const bar = el('span', 'reactbar');
+  REACT_CHOICES.forEach(([code, glyph]) => {
+    const b = el('button', 'rbtn', glyph);
+    b.title = 'react :' + code + ':';
+    b.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      b.disabled = true;
+      try {
+        await api('/api/thread/' + it.id + '/message/' + m.ts + '/react', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name: code }),
+        });
+        b.textContent = '✓';
+        setTimeout(() => { b.textContent = glyph; b.disabled = false; }, 1200);
+      } catch (err) {
+        b.disabled = false;
+        b.textContent = '!';
+        b.title = String((err && err.message) || err);
+        setTimeout(() => { b.textContent = glyph; }, 2500);
+      }
+    });
+    bar.appendChild(b);
+  });
+  return bar;
+}
+
 /** Manual open/close choices for a thread's day groups, kept across re-renders. */
 function dayOverrides(threadId) {
   let m = state.dayFolds.get(threadId);
@@ -2098,6 +2258,7 @@ function threadScroll(it, d, a, names) {
       b.appendChild(txt);
       row.appendChild(b);
     }
+    if (it.source === 'slack') row.appendChild(reactBar(it, m));
     body.appendChild(row);
     prev = m;
     });
@@ -2626,6 +2787,8 @@ if (hashMatch) state.cursor = Number(hashMatch[1]);
 
 paintSortControl();      // state.sort came from localStorage; the markup's default may be stale
 paintSourceControl();    // same for the source filter
+// Workspace custom emoji — a luxury: failures (missing scope, offline) change nothing.
+api('/api/emoji').then((m) => { state.customEmoji = m || {}; }).catch(() => {});
 renderFeed();
 renderThread();
 renderTitleBadge();

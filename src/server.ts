@@ -17,7 +17,7 @@ import {
   setItemDone,
   setThreadStatus,
 } from './db.js';
-import { workspaceLabels } from './config.js';
+import { workspaceLabels, workspaces } from './config.js';
 import { requestReanalysis } from './analyzer.js';
 import { chatSessionIdFor, registerChatRoutes } from './chat.js';
 import { harnessReadiness, harnessStatus } from './harness/index.js';
@@ -469,6 +469,113 @@ export function startServer(port: number): Promise<void> {
    * the front of the analyzer queue. It does NOT run the analysis inline — the analyzer
    * stays strictly one-at-a-time, so this only ever enqueues.
    */
+  /**
+   * The workspaces' custom emoji, merged and cached — the UI substitutes :codes: it
+   * cannot map from the built-in set. Empty (never an error) when the emoji:read scope
+   * is missing or Slack is unreachable; aliases are resolved server-side.
+   */
+  let emojiCache: { at: number; map: Record<string, string> } | null = null;
+  app.get('/api/emoji', async (_req, res) => {
+    if (emojiCache !== null && Date.now() - emojiCache.at < 60 * 60_000) {
+      res.json(emojiCache.map);
+      return;
+    }
+    const merged: Record<string, string> = {};
+    for (const ws of workspaces) {
+      try {
+        const r = await fetch('https://slack.com/api/emoji.list', {
+          headers: { Authorization: `Bearer ${ws.userToken}` },
+          signal: AbortSignal.timeout(10_000),
+        });
+        const body = (await r.json()) as { ok?: boolean; emoji?: Record<string, string> };
+        if (body.ok === true && body.emoji) {
+          for (const [name, value] of Object.entries(body.emoji)) {
+            if (!value.startsWith('alias:')) merged[name] = value;
+          }
+          for (const [name, value] of Object.entries(body.emoji)) {
+            if (value.startsWith('alias:')) {
+              const target = merged[value.slice(6)];
+              if (target !== undefined) merged[name] = target;
+            }
+          }
+        }
+      } catch {
+        // missing scope / offline — customs just don't render, nothing breaks
+      }
+    }
+    emojiCache = { at: Date.now(), map: merged };
+    res.json(merged);
+  });
+
+  /**
+   * A reaction the user tapped onto one message. Like the reply endpoint this fires
+   * ONLY from a click in the UI — reacting is a write to Slack and is therefore not,
+   * and must never become, something a model can reach.
+   */
+  app.post('/api/thread/:id/message/:ts/react', async (req, res) => {
+    const id = Number(req.params.id);
+    const ts = String(req.params.ts ?? '');
+    if (!Number.isInteger(id) || id <= 0 || !/^\d+\.\d+$/.test(ts)) {
+      res.status(400).json({ error: 'invalid id' });
+      return;
+    }
+    const body = (req.body ?? {}) as { name?: unknown };
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    if (!/^[a-z0-9_+'-]{1,100}$/.test(name)) {
+      res.status(400).json({ error: 'invalid reaction name' });
+      return;
+    }
+    const thread = getThreadById(id);
+    if (!thread) {
+      res.status(404).json({ error: 'thread not found' });
+      return;
+    }
+    if (thread.source !== 'slack') {
+      res.status(400).json({ error: 'reactions only work on Slack messages' });
+      return;
+    }
+    const ws = workspaces.find((w) => w.key === thread.workspace);
+    if (!ws) {
+      res.status(503).json({ error: `workspace ${thread.workspace} is not connected right now` });
+      return;
+    }
+    if ((process.env.COPILOT_REPLY_DRYRUN ?? '') === '1') {
+      console.log(`[server] reaction DRY RUN thread=#${id} channel=${thread.channel_id} ts=${ts} name=${name}`);
+      res.json({ ok: true, dryRun: true });
+      return;
+    }
+    try {
+      const r = await fetch('https://slack.com/api/reactions.add', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${ws.userToken}`,
+          'content-type': 'application/json; charset=utf-8',
+        },
+        body: JSON.stringify({ channel: thread.channel_id, timestamp: ts, name }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      const out = (await r.json()) as { ok?: boolean; error?: string };
+      if (out.ok === true || out.error === 'already_reacted') {
+        // Audit: destination and reaction name only — never message text.
+        console.log(`[server] reaction sent thread=#${id} channel=${thread.channel_id} ts=${ts} name=${name}`);
+        res.json({ ok: true });
+        return;
+      }
+      if (out.error === 'missing_scope' || out.error === 'not_allowed_token_type') {
+        res.status(503).json({
+          error: 'needs_reinstall',
+          message:
+            'Reactions need updated Slack permissions — run `slack app install` for each workspace, then restart the app.',
+        });
+        return;
+      }
+      res.status(502).json({ error: out.error ?? 'Slack refused the reaction' });
+    } catch (err) {
+      console.error('[server] reaction failed:', err);
+      res.status(502).json({ error: "Couldn't reach Slack — try again in a moment." });
+    }
+  });
+
   /**
    * The user's own checkbox on one item. Done pins it done (the analyzer may not
    * reopen it); unticking reopens it. Never a model-reachable path.

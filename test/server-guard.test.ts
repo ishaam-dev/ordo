@@ -14,7 +14,7 @@ import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
-import { resetDb, seedThread } from './helpers/fixtures.js';
+import { raw, resetDb, seedThread } from './helpers/fixtures.js';
 
 const db = await import('../src/db.js');
 assertIsolated(db.DB_PATH);
@@ -197,10 +197,15 @@ test('token: the served HTML never contains the placeholder any more', async () 
 });
 
 test('the token is minted per run, so every /api route requires this exact value', async () => {
-  for (const path of ['/api/status', '/api/feed', '/api/thread/1', '/api/thread/1/chat']) {
+  for (const path of ['/api/status', '/api/feed', '/api/thread/1', '/api/thread/1/chat', '/api/emoji']) {
     assert.equal((await request({ path })).status, 401, path);
   }
-  for (const path of ['/api/thread/1/status', '/api/thread/1/reanalyze', '/api/thread/1/reply']) {
+  for (const path of [
+    '/api/thread/1/status',
+    '/api/thread/1/reanalyze',
+    '/api/thread/1/reply',
+    '/api/thread/1/message/1000.000100/react',
+  ]) {
     assert.equal((await request({ path, method: 'POST', body: '{}' })).status, 401, path);
   }
 });
@@ -349,4 +354,63 @@ test('POST /api/thread/:id/reply validates before it would ever reach Slack', as
   });
   assert.equal(refused.status, 503);
   assert.equal((JSON.parse(refused.body) as { error: string }).error, 'workspace_not_configured');
+});
+
+test('POST /api/thread/:id/message/:ts/react validates before it would ever reach Slack', async () => {
+  resetDb();
+  const id = seedThread();
+
+  const badTs = await request({
+    path: `/api/thread/${id}/message/notats/react`,
+    method: 'POST',
+    token: TOKEN,
+    body: '{"name":"+1"}',
+  });
+  assert.equal(badTs.status, 400, 'a ts that is not a Slack ts is refused');
+
+  for (const body of ['{}', '{"name":""}', '{"name":"Thumbs Up"}', '{"name":":+1:"}', JSON.stringify({ name: 'x'.repeat(101) })]) {
+    const res = await request({
+      path: `/api/thread/${id}/message/1000.000100/react`,
+      method: 'POST',
+      token: TOKEN,
+      body,
+    });
+    assert.equal(res.status, 400, body.slice(0, 30));
+    assert.equal((JSON.parse(res.body) as { error: string }).error, 'invalid reaction name');
+  }
+
+  const missing = await request({
+    path: '/api/thread/999999/message/1000.000100/react',
+    method: 'POST',
+    token: TOKEN,
+    body: '{"name":"+1"}',
+  });
+  assert.equal(missing.status, 404);
+
+  // Email threads are read-only end to end; reacting is a Slack-only affordance.
+  const mail = seedThread({ thread_ts: 'gmailthread1', channel_id: 'GMAIL' });
+  raw().prepare("UPDATE threads SET source = 'gmail' WHERE id = ?").run(mail);
+  const refusedMail = await request({
+    path: `/api/thread/${mail}/message/1000.000100/react`,
+    method: 'POST',
+    token: TOKEN,
+    body: '{"name":"+1"}',
+  });
+  assert.equal(refusedMail.status, 400);
+
+  // A valid request still cannot reach Slack: no workspace is configured in a test
+  // process, so the send path refuses before any network call — same shape as /reply.
+  const refused = await request({
+    path: `/api/thread/${id}/message/1000.000100/react`,
+    method: 'POST',
+    token: TOKEN,
+    body: '{"name":"+1"}',
+  });
+  assert.equal(refused.status, 503);
+});
+
+test('GET /api/emoji answers an empty map when no workspace can be asked', async () => {
+  const res = await request({ path: '/api/emoji', token: TOKEN });
+  assert.equal(res.status, 200);
+  assert.deepEqual(JSON.parse(res.body), {});
 });
